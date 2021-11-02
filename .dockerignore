@@ -1,0 +1,6 @@
+.git/
+.idea/
+example/
+build-and-push.sh
+codemap
+Dockerfile
