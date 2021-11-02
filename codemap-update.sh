@@ -13,10 +13,10 @@ prepare_executable() {
     done
     [[ -z $tempdir ]] && { echo "ERROR: could not locate system temp directory"; exit 1; }
 
-    # We'll check for updates once per day.
+    # We'll check for updates once per day (unless running in CircleCI)
     datefile="$tempdir/$executable_prefix.date"
     today=$(date '+%Y-%m-%d')
-    if [[ ! -f $datefile || $(< "$datefile") != "$today" ]]; then
+    if [[ -z ${CIRCLECI:-} && ( ! -f $datefile || $(< "$datefile") != "$today" ) ]]; then
         echo 'Checking for updates...'
         docker pull "$image"
         echo -n "$today" > "$datefile"
