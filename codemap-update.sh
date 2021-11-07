@@ -67,8 +67,11 @@ prepare_executable() {
         echo 'Checking for updates...'
         docker_config_path="$tempdir/eyecue-temp-docker"
         echo "$gcp_auth_json" \
-          | docker --config "$docker_config_path" login -u _json_key --password-stdin https://${image%%/*} 2>&1 \
-          | grep -Ev '^(WARNING! Your password|Configure a credential helper|https://docs.docker.com/engine/reference/commandline/login/#credentials-store|$)'
+          | docker --config "$docker_config_path" login -u _json_key --password-stdin "https://${image%%/*}" 2>&1 \
+          | {
+              grep -Ev '^(WARNING! Your password|Configure a credential helper|https://docs.docker.com/engine/reference/commandline/login/#credentials-store|Login Succeeded|$)' \
+              || true
+            }
         docker --config "$docker_config_path" pull "$image"
         echo -n "$today" > "$datefile"
         rm -rf "$docker_config_path"
