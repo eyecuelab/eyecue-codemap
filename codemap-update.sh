@@ -63,7 +63,7 @@ prepare_executable() {
     # We'll check for updates once per day (unless running in CI)
     datefile="$tempdir/$executable_prefix.date"
     today=$(date '+%Y-%m-%d')
-    if [[ -z ${CI:-} && ( ! -f $datefile || $(< "$datefile") != "$today" ) ]]; then
+    if [[ ! -f $datefile || $(< "$datefile") != "$today" ]]; then
         echo 'Checking for updates...'
         docker_config_path="$tempdir/eyecue-temp-docker"
         echo "$gcp_auth_json" \
