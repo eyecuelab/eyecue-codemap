@@ -60,7 +60,7 @@ prepare_executable() {
     done
     [[ -z $tempdir ]] && { echo "ERROR: could not locate system temp directory"; exit 1; }
 
-    # We'll check for updates once per day (unless running in CI)
+    # We'll check for updates once per day
     datefile="$tempdir/$executable_prefix.date"
     today=$(date '+%Y-%m-%d')
     if [[ ! -f $datefile || $(< "$datefile") != "$today" ]]; then
