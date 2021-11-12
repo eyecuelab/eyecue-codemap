@@ -56,3 +56,9 @@ to install or manage anything.
 
 See the [Powur Vision Gateway repo](https://github.com/eyecuelab/powur-vision-gateway) for an example integration with
 the existing linting and Git hooks.
+
+# CI/CD
+
+Building and pushing the Docker image to GCP Artifact Registry is done via GitHub Actions.
+
+The `eyecue-codemap-ci@eyecue-ops.iam.gserviceaccount.com` GCP service account is used to authenticate to Google Cloud. Credentials for this account are stored in a GitHub respository secret named `GOOGLE_AUTH_JSON`.

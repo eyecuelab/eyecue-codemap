@@ -1,0 +1,22 @@
+name: Build and push Docker image
+on:
+  push:
+    branches: [ master ]
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: us-central1-docker.pkg.dev/eyecue-ops/eyecue-codemap/eyecue-codemap
+      GOOGLE_AUTH_JSON: ${{ secrets.GOOGLE_AUTH_JSON }}
+    steps:
+      - uses: actions/checkout@v2
+      - name: Docker build
+        run: |
+          docker build . -t ${{ env.IMAGE }}
+      - name: Docker login
+        run: |
+          echo "$GOOGLE_AUTH_JSON" | docker login -u _json_key --password-stdin https://us-central1-docker.pkg.dev
+      - name: Docker push
+        run: |
+          docker push ${{ env.IMAGE }}
