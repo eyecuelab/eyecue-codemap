@@ -1,0 +1,12 @@
+{
+  "type": "service_account",
+  "project_id": "eyecue-ops",
+  "private_key_id": "4b55d9467a932a0735fceb645bd05c3a1cb3f76b",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCl7Y7OHx+mSPAX\nuEPQvJXPZvAO2DvqNP3Huym9Qe7i8nHvft9R+Fk7/xIlg8X1VexMRfr+lbXjsgIj\nXgYf02umGaCB0bduLqjwVcnZGySEobotDhXSuxJenJqDA9j1NmfDdlq18vCvsQeB\nwn/yjX5CS23mDo0ALZvVTe9Fto+vCb0GSCQTyfVDYqhIcDRH4bCXtnYPY5NK6FxN\n7v83PZCZufQ+p+UQXi1HP4Hz6WzVrFP5oyCFfzV1qNHc3eEeOuCq4Iy7EGdJ4c+F\nmCfe9iPXvrvyJ6E+hd1Govx7bn7wFi3i7yU4bYSk0absoZ7jxJu5640is8HVYMf7\nejtkDFujAgMBAAECggEADGMp0CA+tU6orfynA28GIs+6iEEtvT8WMH0RO/yEyxNH\n3OtfMg1qYVzvi+FvO/Dy4oGEStFTx5tDJu90DELfvIIZRi0pQTk2ijVoC6SdG1G/\nm8bQwO9lCwSB/ISjA9t7RPpnAe0QeZgBHszYedEvuzSfuxccVlu7+zawRZzAKVRg\nApaEhC9g5+p/keAnYxiT0ICK5hgmMnAVKLpNkLijbaotHAHcYmTYhlOzZSUFBqPw\nImMnsHeQa47OfQDatbbh3qDZ0nq0VKGpW8oSjiROQYJW+JyrvICM2L5r+RD0VPD0\nZlaTj9voCUE7GBhPAEnpOsVGvRP6tCIltkoEbomHEQKBgQDSZsCvhmLqwDtw2+1/\noyjgOU7tJTvTE5P9eVgBpD1KcNkgqIjirmc9soc753umauQ/UUIi3gFI4Hfu9yxo\n4QPTNOPlfjCle203aifxjpSa7kR1XAMbfyHvvqlDgNkBmdHFL0/MF3pWsVhN7u+p\n9gaaAld55KzcLIe4R249UTL7nQKBgQDJ42HUVjl2eXy0YxJsegcubJ4fMD+YUKyb\nwxJ+KnvIrDrr48C8vp3wN5uLmBwtRHcmAxMhQPo7iDhrHzahOxLd31QCa3vhyxKB\nkTH/0R7si4s0DJYUmS3t86j3wjNlzAgh26+S1fssSSXkK85CMjzl8zw7lRcPF/kF\nfrD7ba8wPwKBgQChfz1nfT9v8R2vAyDJV/OIKHTskifZXK27YeirWeWxvezrpHFt\njXCxatdio8vFcUbBUx3wpXdW+PUV96Oe3RiShYZoIPQ2EQdEAbenMkneogTqEDZS\nZMMnwrEpnzzyfZ8GO8qEXYEKChY9u6k6TB3FGQcMCPqmBYgnaqyzZCA+AQKBgGcH\nMDSxcA/C/d38tTlAqQuLCMK316x+dyfiTDywp40IP+WDzCdGS8l8R1fc33xGdVuj\ntA6DX3AkG06nljR/tigeQXweqBDZlm8iztZTPSnQKND+H1URuvu1HiSaKaqojfnh\nZ99SbiTyi3C+3jqv8p4THEj309WzETU5q04UcpP3AoGAUEflNMUCZhezwF0vytLK\nj1NRd7V9y3fE/RhohQfnOR4jIg6E/lXmX7NKUgLZieHalCJA5bzIxo8L6UvtmRWR\n42jfGw8wgQk2D6dP4kYRZXh2rDKUVP6POkoxfrzVJQiwvpG1jd1Qkg/TbhAnkkBF\nzRizEFl5oqcolFYSKhZaGY4=\n-----END PRIVATE KEY-----\n",
+  "client_email": "eyecue-ops-terraform@eyecue-ops.iam.gserviceaccount.com",
+  "client_id": "105085906167525929761",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/eyecue-ops-terraform%40eyecue-ops.iam.gserviceaccount.com"
+}
