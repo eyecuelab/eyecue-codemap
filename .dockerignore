@@ -1,6 +1,4 @@
-.git/
-.idea/
-example/
-build-and-push.sh
-codemap
-Dockerfile
+**
+!go.mod
+!go.sum
+!main.go

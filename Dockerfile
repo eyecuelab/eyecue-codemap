@@ -28,7 +28,11 @@ RUN cd /build && \
     ./upx --brute eyecue-codemap-linux eyecue-codemap-darwin
 
 
-# The final container image only needs the executables.
+# There will be separate container images for each platform,
+# each containing only the executable itself.
 
-FROM scratch
-COPY --from=builder /build/eyecue-codemap-linux /build/eyecue-codemap-darwin /bin/
+FROM scratch AS linux-final
+COPY --from=builder /build/eyecue-codemap-linux /bin/eyecue-codemap
+
+FROM scratch AS darwin-final
+COPY --from=builder /build/eyecue-codemap-darwin /bin/eycue-codemap
