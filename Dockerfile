@@ -35,4 +35,4 @@ FROM scratch AS linux-final
 COPY --from=builder /build/eyecue-codemap-linux /bin/eyecue-codemap
 
 FROM scratch AS darwin-final
-COPY --from=builder /build/eyecue-codemap-darwin /bin/eycue-codemap
+COPY --from=builder /build/eyecue-codemap-darwin /bin/eyecue-codemap
