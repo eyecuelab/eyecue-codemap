@@ -26,6 +26,12 @@ var tokenNeededRegexp = regexp.MustCompile(`\[eyecue-codemap]`)
 var tokenRegexp = regexp.MustCompile(`^(.*)\[eyecue-codemap:([A-Za-z0-9]+)](.*)$`)
 var tokenRefRegexp = regexp.MustCompile(`<!--eyecue-codemap:[A-Za-z0-9]+-->]\(.*?\)`)
 
+var ignoreExtensions = []string{
+	".jpg",
+	".jpeg",
+	".png",
+}
+
 func main() {
 	for _, arg := range os.Args[1:] {
 		if arg == "--help" || arg == "-h" {
@@ -74,8 +80,16 @@ func run(filenameSource io.Reader, checkOnly bool) error {
 
 	// inventory each input file, generating tokens and updating them if needed
 	scn := bufio.NewScanner(filenameSource)
+SCAN:
 	for scn.Scan() {
 		filename := scn.Text()
+
+		for _, ext := range ignoreExtensions {
+			if strings.HasSuffix(filename, ext) {
+				continue SCAN
+			}
+		}
+
 		err := processFile(filename, tokenMap, checkOnly)
 		if err != nil {
 			return err
