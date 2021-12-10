@@ -172,6 +172,8 @@ func processFile(filename string, tokenMap TokenMap, checkOnly bool) error {
 			lineNum := currentLine
 			if after == "" && (before == "//" || before == "#") {
 				lineNum++
+			} else if before == "<!--" && after == "-->" {
+				lineNum++
 			}
 
 			tokenMap[token] = append(tokenMap[token], TokenLocation{
