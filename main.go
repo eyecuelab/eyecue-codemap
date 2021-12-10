@@ -23,7 +23,7 @@ type TokenLocation struct {
 type TokenMap = map[string][]TokenLocation
 
 var tokenNeededRegexp = regexp.MustCompile(`\[eyecue-codemap]`)
-var tokenRegexp = regexp.MustCompile(`\[eyecue-codemap:([A-Za-z0-9]+)]`)
+var tokenRegexp = regexp.MustCompile(`^(.*)\[eyecue-codemap:([A-Za-z0-9]+)](.*)$`)
 var tokenRefRegexp = regexp.MustCompile(`<!--eyecue-codemap:[A-Za-z0-9]+-->]\(.*?\)`)
 
 func main() {
@@ -144,19 +144,28 @@ func processFile(filename string, tokenMap TokenMap, checkOnly bool) error {
 	}
 
 	// inventory tokens
-	lineNum := 1
+	currentLine := 1
 	scn := bufio.NewScanner(bytes.NewReader(fileBytes))
 	for scn.Scan() {
 		m := tokenRegexp.FindAllSubmatch(scn.Bytes(), -1)
 		for _, match := range m {
-			token := string(match[1])
+			before := strings.TrimSpace(string(match[1]))
+			token := string(match[2])
+			after := strings.TrimSpace(string(match[3]))
+
+			// If the only thing on the line is the codemap comment,
+			// link to the next line. Add more comment strings here as needed.
+			lineNum := currentLine
+			if after == "" && (before == "//" || before == "#") {
+				lineNum++
+			}
 
 			tokenMap[token] = append(tokenMap[token], TokenLocation{
 				filename: filename,
 				lineNum:  lineNum,
 			})
 		}
-		lineNum++
+		currentLine++
 	}
 	if scn.Err() != nil {
 		if scn.Err() == bufio.ErrTooLong {
