@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -195,10 +196,11 @@ func processFile(filename string, tokenMap TokenMap, checkOnly bool) error {
 	return nil
 }
 
-func updateMarkdownFile(filename string, tokenMap TokenMap, checkOnly bool) error {
-	fileBytes, err := os.ReadFile(filename)
+func updateMarkdownFile(mdFilename string, tokenMap TokenMap, checkOnly bool) error {
+	mdFilenameDir := filepath.Dir(mdFilename)
+	fileBytes, err := os.ReadFile(mdFilename)
 	if err != nil {
-		return fmt.Errorf(`failed to read "%s": %w`, filename, err)
+		return fmt.Errorf(`failed to read "%s": %w`, mdFilename, err)
 	}
 
 	var replaceErr error
@@ -214,18 +216,23 @@ func updateMarkdownFile(filename string, tokenMap TokenMap, checkOnly bool) erro
 
 		tokenLocs := tokenMap[token]
 		if len(tokenLocs) == 0 {
-			replaceErr = fmt.Errorf(`token "%s" in "%s" was not found`, token, filename)
+			replaceErr = fmt.Errorf(`token "%s" in "%s" was not found`, token, mdFilename)
 		} else {
 			loc := tokenLocs[0]
-			original := string(m)
-			replacement := fmt.Sprintf("<!--eyecue-codemap:%s-->](%s#L%d)", token, loc.filename, loc.lineNum)
-			if original != replacement {
-				if checkOnly {
-					replaceErr = fmt.Errorf(`incorrect link in "%s" to token "%s"`, filename, token)
-				} else {
-					changed = true
-					fmt.Printf("Updated link in \"%s\" to token \"%s\" -> \"%s:%d\"\n", filename, token, loc.filename, loc.lineNum)
-					return []byte(replacement)
+			locRelPath, err := filepath.Rel(mdFilenameDir, loc.filename)
+			if err != nil {
+				replaceErr = fmt.Errorf("filepath.Rel(%s, %s): %w", mdFilenameDir, loc.filename, err)
+			} else {
+				original := string(m)
+				replacement := fmt.Sprintf("<!--eyecue-codemap:%s-->](%s#L%d)", token, locRelPath, loc.lineNum)
+				if original != replacement {
+					if checkOnly {
+						replaceErr = fmt.Errorf(`incorrect link in "%s" to token "%s"`, mdFilename, token)
+					} else {
+						changed = true
+						fmt.Printf("Updated link in \"%s\" to token \"%s\" -> \"%s:%d\"\n", mdFilename, token, locRelPath, loc.lineNum)
+						return []byte(replacement)
+					}
 				}
 			}
 		}
@@ -238,9 +245,9 @@ func updateMarkdownFile(filename string, tokenMap TokenMap, checkOnly bool) erro
 	}
 
 	if changed {
-		err := os.WriteFile(filename, fileBytes, 0)
+		err := os.WriteFile(mdFilename, fileBytes, 0)
 		if err != nil {
-			return fmt.Errorf(`failed to write "%s": %w`, filename, err)
+			return fmt.Errorf(`failed to write "%s": %w`, mdFilename, err)
 		}
 	}
 
