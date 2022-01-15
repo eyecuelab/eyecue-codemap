@@ -22,9 +22,10 @@ RUN cd /build && GOOS=linux go mod download -x && GOOS=darwin go mod download -x
 # This layer will rebuild on any change.
 
 COPY . /build
+ARG VERSION
 RUN cd /build && \
-    GOOS=linux go build -ldflags="-s -w" -o eyecue-codemap-linux . && \
-    GOOS=darwin go build -ldflags="-s -w" -o eyecue-codemap-darwin . && \
+    GOOS=linux go build -ldflags="-s -w -X main.Version=$VERSION" -o eyecue-codemap-linux . && \
+    GOOS=darwin go build -ldflags="-s -w -X main.Version=$VERSION" -o eyecue-codemap-darwin . && \
     ./upx --brute eyecue-codemap-linux eyecue-codemap-darwin
 
 

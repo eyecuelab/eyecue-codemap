@@ -33,10 +33,14 @@ var ignoreExtensions = []string{
 	".png",
 }
 
+var Version string = "dev"
+
 func main() {
 	for _, arg := range os.Args[1:] {
 		if arg == "--help" || arg == "-h" {
-			fmt.Println("Usage: eyecue-codemap [--check-only]\nPipe in a list of filenames to stdin, one per line.")
+			fmt.Printf("eyecue-codemap version %s\n"+
+				"Usage: eyecue-codemap [--check-only]\n"+
+				"Pipe in a list of filenames to stdin, one per line.\n", Version)
 			os.Exit(0)
 		}
 	}
@@ -60,7 +64,7 @@ func main() {
 		fmt.Println("WARNING: reading filenames from stdin. Did you forget to pipe in a list of filenames?")
 	}
 
-	fmt.Printf("eyecue-codemap running...")
+	fmt.Printf("eyecue-codemap %s running...", Version)
 	if checkOnly {
 		fmt.Printf(" (check only)")
 	}
