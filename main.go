@@ -36,26 +36,22 @@ var ignoreExtensions = []string{
 var Version string = "dev"
 
 func main() {
+	checkOnly := false
+	noUnused := false
+
 	for _, arg := range os.Args[1:] {
-		if arg == "--help" || arg == "-h" {
+		switch arg {
+		case "--help", "-h":
 			fmt.Printf("eyecue-codemap version %s\n"+
-				"Usage: eyecue-codemap [--check-only]\n"+
+				"Usage: eyecue-codemap [--check-only] [--no-unused]\n"+
 				"Pipe in a list of filenames to stdin, one per line.\n", Version)
 			os.Exit(0)
-		}
-	}
-
-	if len(os.Args) > 2 {
-		fmt.Println("ERROR: too many arguments")
-		os.Exit(2)
-	}
-
-	checkOnly := false
-	if len(os.Args) == 2 {
-		if os.Args[1] == "--check-only" {
+		case "--check-only":
 			checkOnly = true
-		} else {
-			fmt.Printf("ERROR: unrecognized argument: %s\n", os.Args[1])
+		case "--no-unused":
+			noUnused = true
+		default:
+			fmt.Printf("ERROR: unrecognized argument: %s\n", arg)
 			os.Exit(2)
 		}
 	}
@@ -70,7 +66,7 @@ func main() {
 	}
 	fmt.Println()
 
-	err := run(os.Stdin, checkOnly)
+	err := run(os.Stdin, checkOnly, noUnused)
 	if err != nil {
 		fmt.Printf("eyecue-codemap error: %v\n", err)
 		os.Exit(1)
@@ -79,7 +75,7 @@ func main() {
 	fmt.Println("eyecue-codemap completed successfully")
 }
 
-func run(filenameSource io.Reader, checkOnly bool) error {
+func run(filenameSource io.Reader, checkOnly bool, noUnused bool) error {
 	tokenMap := make(TokenMap)
 	var mdFilenames []string
 
@@ -108,8 +104,10 @@ SCAN:
 		return fmt.Errorf("failed to read list of filenames: %w", scn.Err())
 	}
 
-	// detect duplicate tokens
+	unusedTokens := make(map[string]struct{})
+
 	for token, tokenLocs := range tokenMap {
+		// detect duplicate tokens
 		if len(tokenLocs) > 1 {
 			errMsg := fmt.Sprintf("duplicate token \"%s\" at:", token)
 			for _, tokenLoc := range tokenLocs {
@@ -117,13 +115,26 @@ SCAN:
 			}
 			return errors.New(errMsg)
 		}
+
+		unusedTokens[token] = struct{}{}
 	}
 
 	// update the Markdown files
 	for _, filename := range mdFilenames {
-		err := updateMarkdownFile(filename, tokenMap, checkOnly)
+		err := updateMarkdownFile(filename, tokenMap, checkOnly, unusedTokens)
 		if err != nil {
 			return err
+		}
+	}
+
+	// show unusued tokens
+	for token := range unusedTokens {
+		tokenLoc := tokenMap[token][0]
+		msg := fmt.Sprintf("unused token %s at %s:%d", token, tokenLoc.filename, tokenLoc.lineNum)
+		if noUnused {
+			return errors.New(msg)
+		} else {
+			fmt.Println(msg)
 		}
 	}
 
@@ -200,7 +211,7 @@ func processFile(filename string, tokenMap TokenMap, checkOnly bool) error {
 	return nil
 }
 
-func updateMarkdownFile(mdFilename string, tokenMap TokenMap, checkOnly bool) error {
+func updateMarkdownFile(mdFilename string, tokenMap TokenMap, checkOnly bool, unusedTokens map[string]struct{}) error {
 	mdFilenameDir := filepath.Dir(mdFilename)
 	fileBytes, err := os.ReadFile(mdFilename)
 	if err != nil {
@@ -222,6 +233,8 @@ func updateMarkdownFile(mdFilename string, tokenMap TokenMap, checkOnly bool) er
 		if len(tokenLocs) == 0 {
 			replaceErr = fmt.Errorf(`token "%s" in "%s" was not found`, token, mdFilename)
 		} else {
+			delete(unusedTokens, token)
+
 			loc := tokenLocs[0]
 			locRelPath, err := filepath.Rel(mdFilenameDir, loc.filename)
 			if err != nil {
