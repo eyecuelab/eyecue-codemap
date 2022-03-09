@@ -35,9 +35,13 @@ var ignoreExtensions = []string{
 
 var Version string = "dev"
 
+type Config struct {
+	CheckOnly bool
+	NoUnused  bool
+}
+
 func main() {
-	checkOnly := false
-	noUnused := false
+	var config Config
 
 	for _, arg := range os.Args[1:] {
 		switch arg {
@@ -47,9 +51,9 @@ func main() {
 				"Pipe in a list of filenames to stdin, one per line.\n", Version)
 			os.Exit(0)
 		case "--check-only":
-			checkOnly = true
+			config.CheckOnly = true
 		case "--no-unused":
-			noUnused = true
+			config.NoUnused = true
 		default:
 			fmt.Printf("ERROR: unrecognized argument: %s\n", arg)
 			os.Exit(2)
@@ -61,12 +65,12 @@ func main() {
 	}
 
 	fmt.Printf("eyecue-codemap %s running...", Version)
-	if checkOnly {
+	if config.CheckOnly {
 		fmt.Printf(" (check only)")
 	}
 	fmt.Println()
 
-	err := run(os.Stdin, checkOnly, noUnused)
+	err := run(config, os.Stdin)
 	if err != nil {
 		fmt.Printf("eyecue-codemap error: %v\n", err)
 		os.Exit(1)
@@ -75,7 +79,7 @@ func main() {
 	fmt.Println("eyecue-codemap completed successfully")
 }
 
-func run(filenameSource io.Reader, checkOnly bool, noUnused bool) error {
+func run(config Config, filenameSource io.Reader) error {
 	tokenMap := make(TokenMap)
 	var mdFilenames []string
 
@@ -91,7 +95,7 @@ SCAN:
 			}
 		}
 
-		err := processFile(filename, tokenMap, checkOnly)
+		err := processFile(config, filename, tokenMap)
 		if err != nil {
 			return err
 		}
@@ -121,7 +125,7 @@ SCAN:
 
 	// update the Markdown files
 	for _, filename := range mdFilenames {
-		err := updateMarkdownFile(filename, tokenMap, checkOnly, unusedTokens)
+		err := updateMarkdownFile(config, filename, tokenMap, unusedTokens)
 		if err != nil {
 			return err
 		}
@@ -131,7 +135,7 @@ SCAN:
 	for token := range unusedTokens {
 		tokenLoc := tokenMap[token][0]
 		msg := fmt.Sprintf("unused token %s at %s:%d", token, tokenLoc.filename, tokenLoc.lineNum)
-		if noUnused {
+		if config.NoUnused {
 			return errors.New(msg)
 		} else {
 			fmt.Println(msg)
@@ -141,7 +145,7 @@ SCAN:
 	return nil
 }
 
-func processFile(filename string, tokenMap TokenMap, checkOnly bool) error {
+func processFile(config Config, filename string, tokenMap TokenMap) error {
 	stat, err := os.Lstat(filename)
 	if err != nil {
 		return fmt.Errorf(`failed to stat "%s": %w`, filename, err)
@@ -156,7 +160,7 @@ func processFile(filename string, tokenMap TokenMap, checkOnly bool) error {
 	}
 
 	// generate tokens
-	if !checkOnly {
+	if !config.CheckOnly {
 		changed := false
 		fileBytes = tokenNeededRegexp.ReplaceAllFunc(fileBytes, func(_ []byte) []byte {
 			changed = true
@@ -211,7 +215,7 @@ func processFile(filename string, tokenMap TokenMap, checkOnly bool) error {
 	return nil
 }
 
-func updateMarkdownFile(mdFilename string, tokenMap TokenMap, checkOnly bool, unusedTokens map[string]struct{}) error {
+func updateMarkdownFile(config Config, mdFilename string, tokenMap TokenMap, unusedTokens map[string]struct{}) error {
 	mdFilenameDir := filepath.Dir(mdFilename)
 	fileBytes, err := os.ReadFile(mdFilename)
 	if err != nil {
@@ -243,7 +247,7 @@ func updateMarkdownFile(mdFilename string, tokenMap TokenMap, checkOnly bool, un
 				original := string(m)
 				replacement := fmt.Sprintf("<!--eyecue-codemap:%s-->](%s#L%d)", token, locRelPath, loc.lineNum)
 				if original != replacement {
-					if checkOnly {
+					if config.CheckOnly {
 						replaceErr = fmt.Errorf(`incorrect link in "%s" to token "%s"`, mdFilename, token)
 					} else {
 						changed = true
