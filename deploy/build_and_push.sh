@@ -5,6 +5,11 @@ set -euo pipefail
 version="${1:-}"
 [[ $version ]] || { echo "must specify version argument"; exit 1; }
 
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
+
+# Update Go
+. "$script_dir/update_go.sh"
+
 # Linting
 curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b "$HOME/.local/bin" v1.43.0
 ./lint.sh

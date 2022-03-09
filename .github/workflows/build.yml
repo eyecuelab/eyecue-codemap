@@ -11,4 +11,4 @@ jobs:
     steps:
       - uses: actions/checkout@v2
       - name: Docker build and push
-        run: ./build_and_push.sh "$(git rev-parse --short HEAD)"
+        run: ./deploy/build_and_push.sh "$(git rev-parse --short HEAD)"
