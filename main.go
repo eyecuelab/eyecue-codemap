@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"github.com/akamensky/base58"
 	"github.com/mattn/go-isatty"
-	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -60,17 +59,7 @@ func main() {
 		}
 	}
 
-	if isatty.IsTerminal(os.Stdin.Fd()) {
-		fmt.Println("WARNING: reading filenames from stdin. Did you forget to pipe in a list of filenames?")
-	}
-
-	fmt.Printf("eyecue-codemap %s running...", Version)
-	if config.CheckOnly {
-		fmt.Printf(" (check only)")
-	}
-	fmt.Println()
-
-	err := run(config, os.Stdin)
+	err := run(config)
 	if err != nil {
 		fmt.Printf("eyecue-codemap error: %v\n", err)
 		os.Exit(1)
@@ -79,22 +68,23 @@ func main() {
 	fmt.Println("eyecue-codemap completed successfully")
 }
 
-func run(config Config, filenameSource io.Reader) error {
+func run(config Config) error {
+	fmt.Printf("eyecue-codemap %s running...", Version)
+	if config.CheckOnly {
+		fmt.Printf(" (check only)")
+	}
+	fmt.Println()
+
+	filenames, err := readFilenamesFromStdin()
+	if err != nil {
+		return err
+	}
+
 	tokenMap := make(TokenMap)
 	var mdFilenames []string
 
 	// inventory each input file, generating tokens and updating them if needed
-	scn := bufio.NewScanner(filenameSource)
-SCAN:
-	for scn.Scan() {
-		filename := scn.Text()
-
-		for _, ext := range ignoreExtensions {
-			if strings.HasSuffix(filename, ext) {
-				continue SCAN
-			}
-		}
-
+	for _, filename := range filenames {
 		err := processFile(config, filename, tokenMap)
 		if err != nil {
 			return err
@@ -103,9 +93,6 @@ SCAN:
 		if strings.ToLower(path.Ext(filename)) == ".md" {
 			mdFilenames = append(mdFilenames, filename)
 		}
-	}
-	if scn.Err() != nil {
-		return fmt.Errorf("failed to read list of filenames: %w", scn.Err())
 	}
 
 	unusedTokens := make(map[string]struct{})
@@ -145,7 +132,31 @@ SCAN:
 	return nil
 }
 
+func readFilenamesFromStdin() ([]string, error) {
+	if isatty.IsTerminal(os.Stdin.Fd()) {
+		fmt.Println("WARNING: reading filenames from stdin. Did you forget to pipe in a list of filenames?")
+	}
+
+	var filenames []string
+
+	scn := bufio.NewScanner(os.Stdin)
+	for scn.Scan() {
+		filenames = append(filenames, scn.Text())
+	}
+	if scn.Err() != nil {
+		return nil, fmt.Errorf("failed to read list of filenames: %w", scn.Err())
+	}
+
+	return filenames, nil
+}
+
 func processFile(config Config, filename string, tokenMap TokenMap) error {
+	for _, ext := range ignoreExtensions {
+		if strings.HasSuffix(filename, ext) {
+			return nil
+		}
+	}
+
 	stat, err := os.Lstat(filename)
 	if err != nil {
 		return fmt.Errorf(`failed to stat "%s": %w`, filename, err)
