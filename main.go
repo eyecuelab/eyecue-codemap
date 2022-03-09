@@ -127,7 +127,7 @@ SCAN:
 		}
 	}
 
-	// show unusued tokens
+	// show unused tokens
 	for token := range unusedTokens {
 		tokenLoc := tokenMap[token][0]
 		msg := fmt.Sprintf("unused token %s at %s:%d", token, tokenLoc.filename, tokenLoc.lineNum)
