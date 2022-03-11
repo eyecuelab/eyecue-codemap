@@ -27,9 +27,14 @@ var tokenRegexp = regexp.MustCompile(`^(.*)\[eyecue-codemap:([A-Za-z0-9]+)](.*)$
 var tokenRefRegexp = regexp.MustCompile(`<!--eyecue-codemap:[A-Za-z0-9]+-->]\(.*?\)`)
 
 var ignoreExtensions = []string{
-	".jpg",
 	".jpeg",
+	".jpg",
+	".otf",
 	".png",
+	".ttf",
+	".webp",
+	".woff",
+	".woff2",
 }
 
 var Version string = "dev"
