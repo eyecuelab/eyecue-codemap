@@ -119,9 +119,9 @@ func run(config Config) error {
 		return errors.New(strings.Join(dupTokensErrs, "\n"))
 	}
 
-	// update the Markdown files
+	// check or update the Markdown files
 	for _, filename := range mdFilenames {
-		err := updateMarkdownFile(config, filename, tokenMap, unusedTokens)
+		err := processMarkdownFile(config, filename, tokenMap, unusedTokens)
 		if err != nil {
 			return err
 		}
@@ -241,7 +241,7 @@ func processFile(config Config, filename string, tokenMap TokenMap) error {
 	return nil
 }
 
-func updateMarkdownFile(config Config, mdFilename string, tokenMap TokenMap, unusedTokens map[string]struct{}) error {
+func processMarkdownFile(config Config, mdFilename string, tokenMap TokenMap, unusedTokens map[string]struct{}) error {
 	mdFilenameDir := filepath.Dir(mdFilename)
 	fileBytes, err := os.ReadFile(mdFilename)
 	if err != nil {
