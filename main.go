@@ -44,6 +44,12 @@ type Config struct {
 	CheckOnly bool
 	GitIndex  bool
 	NoUnused  bool
+	Verbose   bool
+}
+
+type FileSource struct {
+	Filename     string
+	FromGitIndex bool
 }
 
 func main() {
@@ -62,6 +68,8 @@ func main() {
 			config.GitIndex = true
 		case "--no-unused":
 			config.NoUnused = true
+		case "--verbose":
+			config.Verbose = true
 		default:
 			fmt.Printf("ERROR: unrecognized argument: %s\n", arg)
 			os.Exit(2)
@@ -93,29 +101,29 @@ func run(config Config) error {
 	}
 	fmt.Println()
 
-	var filenames []string
+	var fileSources []FileSource
 	var err error
 	if config.GitIndex {
-		filenames, err = readFilenamesFromGitIndex()
+		fileSources, err = readFilenamesFromGitIndex()
 	} else {
-		filenames, err = readFilenamesFromStdin()
+		fileSources, err = readFilenamesFromStdin()
 	}
 	if err != nil {
 		return err
 	}
 
 	tokenMap := make(TokenMap)
-	var mdFilenames []string
+	var mdFileSources []FileSource
 
 	// inventory each input file, generating tokens and updating them if needed
-	for _, filename := range filenames {
-		err := processFile(config, filename, tokenMap)
+	for _, fileSource := range fileSources {
+		err := processFile(config, fileSource, tokenMap)
 		if err != nil {
 			return err
 		}
 
-		if strings.ToLower(path.Ext(filename)) == ".md" {
-			mdFilenames = append(mdFilenames, filename)
+		if strings.ToLower(path.Ext(fileSource.Filename)) == ".md" {
+			mdFileSources = append(mdFileSources, fileSource)
 		}
 	}
 
@@ -139,8 +147,8 @@ func run(config Config) error {
 	}
 
 	// check or update the Markdown files
-	for _, filename := range mdFilenames {
-		err := processMarkdownFile(config, filename, tokenMap, unusedTokens)
+	for _, fileSource := range mdFileSources {
+		err := processMarkdownFile(config, fileSource, tokenMap, unusedTokens)
 		if err != nil {
 			return err
 		}
@@ -166,12 +174,12 @@ func run(config Config) error {
 	return nil
 }
 
-func readFilenamesFromStdin() ([]string, error) {
+func readFilenamesFromStdin() ([]FileSource, error) {
 	if isatty.IsTerminal(os.Stdin.Fd()) {
 		fmt.Println("WARNING: reading filenames from stdin. Did you forget to pipe in a list of filenames?")
 	}
 
-	var filenames []string
+	var fileSources []FileSource
 
 	scn := bufio.NewScanner(os.Stdin)
 	for scn.Scan() {
@@ -182,28 +190,51 @@ func readFilenamesFromStdin() ([]string, error) {
 			return nil, fmt.Errorf(`failed to stat "%s": %w`, filename, err)
 		}
 		if stat.Mode().IsRegular() && stat.Size() < 10*1024*1024 {
-			filenames = append(filenames, filename)
+			fileSources = append(fileSources, FileSource{
+				Filename:     filename,
+				FromGitIndex: false,
+			})
 		}
 	}
 	if scn.Err() != nil {
 		return nil, fmt.Errorf("failed to read list of filenames from stdin: %w", scn.Err())
 	}
 
-	return filenames, nil
+	return fileSources, nil
 }
 
 var spacesRegexp = regexp.MustCompile(`\s+`)
 
-func readFilenamesFromGitIndex() ([]string, error) {
-	cmd := exec.Command("git", "ls-files", "--stage")
+func readFilenamesFromGitIndex() ([]FileSource, error) {
+	// Determine which files are staged and must be read from the Git index vs. the working dir
+	cmd := exec.Command("git", "diff-index", "--name-only", "-z", "HEAD")
 	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("failed to run git diff-index: %s: %w", strings.TrimSpace(string(output)), err)
+	}
+
+	stagedFilenames := make(map[string]struct{})
+
+	scn := bufio.NewScanner(bytes.NewReader(output))
+	scn.Split(splitNull)
+	for scn.Scan() {
+		stagedFilenames[scn.Text()] = struct{}{}
+	}
+	if scn.Err() != nil {
+		return nil, fmt.Errorf("failed to scan git diff-index output: %w", scn.Err())
+	}
+
+	// Get a list of all filenames in the Git index
+	cmd = exec.Command("git", "ls-files", "--stage", "-z")
+	output, err = cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("failed to run git ls-files: %s: %w", strings.TrimSpace(string(output)), err)
 	}
 
-	var filenames []string
+	var filenames []FileSource
 
-	scn := bufio.NewScanner(bytes.NewReader(output))
+	scn = bufio.NewScanner(bytes.NewReader(output))
+	scn.Split(splitNull)
 	for scn.Scan() {
 		line := scn.Text()
 
@@ -216,10 +247,14 @@ func readFilenamesFromGitIndex() ([]string, error) {
 		// 100644 b438169c25a6cf5649e09d8d51092998fa4e904e 0	Dockerfile
 		parts := spacesRegexp.Split(line, 4)
 		filename := parts[3]
-		filenames = append(filenames, filename)
+		_, isStaged := stagedFilenames[filename]
+		filenames = append(filenames, FileSource{
+			Filename:     filename,
+			FromGitIndex: isStaged,
+		})
 	}
 	if scn.Err() != nil {
-		return nil, fmt.Errorf("failed to read list of filenames from git: %w", scn.Err())
+		return nil, fmt.Errorf("failed to scan git ls-files output: %w", scn.Err())
 	}
 
 	return filenames, nil
@@ -235,23 +270,30 @@ func readFileFromGitIndex(filename string) ([]byte, error) {
 	return output, err
 }
 
-func processFile(config Config, filename string, tokenMap TokenMap) error {
+func readFile(config Config, fileSource FileSource) ([]byte, error) {
+	if fileSource.FromGitIndex {
+		if config.Verbose {
+			fmt.Printf("git index: reading \"%s\"\n", fileSource.Filename)
+		}
+		return readFileFromGitIndex(fileSource.Filename)
+	}
+
+	if config.Verbose {
+		fmt.Printf("working dir: reading \"%s\"\n", fileSource.Filename)
+	}
+	return os.ReadFile(fileSource.Filename)
+}
+
+func processFile(config Config, fileSource FileSource, tokenMap TokenMap) error {
 	for _, ext := range ignoreExtensions {
-		if strings.HasSuffix(filename, ext) {
+		if strings.HasSuffix(fileSource.Filename, ext) {
 			return nil
 		}
 	}
 
-	var fileBytes []byte
-	var err error
-
-	if config.GitIndex {
-		fileBytes, err = readFileFromGitIndex(filename)
-	} else {
-		fileBytes, err = os.ReadFile(filename)
-	}
+	fileBytes, err := readFile(config, fileSource)
 	if err != nil {
-		return fmt.Errorf(`failed to read "%s": %w`, filename, err)
+		return fmt.Errorf(`failed to read "%s": %w`, fileSource.Filename, err)
 	}
 
 	// generate tokens
@@ -260,14 +302,14 @@ func processFile(config Config, filename string, tokenMap TokenMap) error {
 		fileBytes = tokenNeededRegexp.ReplaceAllFunc(fileBytes, func(_ []byte) []byte {
 			changed = true
 			token := generateToken()
-			fmt.Printf("Added new token \"%s\" to \"%s\"\n", token, filename)
+			fmt.Printf("Added new token \"%s\" to \"%s\"\n", token, fileSource.Filename)
 			return []byte("[eyecue-codemap:" + token + "]")
 		})
 
 		if changed {
-			err := os.WriteFile(filename, fileBytes, 0)
+			err := os.WriteFile(fileSource.Filename, fileBytes, 0)
 			if err != nil {
-				return fmt.Errorf(`failed to write "%s": %w`, filename, err)
+				return fmt.Errorf(`failed to write "%s": %w`, fileSource.Filename, err)
 			}
 		}
 	}
@@ -292,7 +334,7 @@ func processFile(config Config, filename string, tokenMap TokenMap) error {
 			}
 
 			tokenMap[token] = append(tokenMap[token], TokenLocation{
-				filename: filename,
+				filename: fileSource.Filename,
 				lineNum:  lineNum,
 			})
 		}
@@ -304,25 +346,18 @@ func processFile(config Config, filename string, tokenMap TokenMap) error {
 			return nil
 		}
 
-		return fmt.Errorf(`failed to scan "%s": %w`, filename, scn.Err())
+		return fmt.Errorf(`failed to scan "%s": %w`, fileSource.Filename, scn.Err())
 	}
 
 	return nil
 }
 
-func processMarkdownFile(config Config, mdFilename string, tokenMap TokenMap, unusedTokens map[string]struct{}) error {
-	mdFilenameDir := filepath.Dir(mdFilename)
+func processMarkdownFile(config Config, mdFileSource FileSource, tokenMap TokenMap, unusedTokens map[string]struct{}) error {
+	mdFilenameDir := filepath.Dir(mdFileSource.Filename)
 
-	var fileBytes []byte
-	var err error
-
-	if config.GitIndex {
-		fileBytes, err = readFileFromGitIndex(mdFilename)
-	} else {
-		fileBytes, err = os.ReadFile(mdFilename)
-	}
+	fileBytes, err := readFile(config, mdFileSource)
 	if err != nil {
-		return fmt.Errorf(`failed to read "%s": %w`, mdFilename, err)
+		return fmt.Errorf(`failed to read "%s": %w`, mdFileSource.Filename, err)
 	}
 
 	var replaceErr error
@@ -338,7 +373,7 @@ func processMarkdownFile(config Config, mdFilename string, tokenMap TokenMap, un
 
 		tokenLocs := tokenMap[token]
 		if len(tokenLocs) == 0 {
-			replaceErr = fmt.Errorf(`token "%s" in "%s" was not found`, token, mdFilename)
+			replaceErr = fmt.Errorf(`token "%s" in "%s" was not found`, token, mdFileSource.Filename)
 		} else {
 			delete(unusedTokens, token)
 
@@ -351,10 +386,10 @@ func processMarkdownFile(config Config, mdFilename string, tokenMap TokenMap, un
 				replacement := fmt.Sprintf("<!--eyecue-codemap:%s-->](%s#L%d)", token, locRelPath, loc.lineNum)
 				if original != replacement {
 					if config.CheckOnly {
-						replaceErr = fmt.Errorf(`incorrect link in "%s" to token "%s"`, mdFilename, token)
+						replaceErr = fmt.Errorf(`incorrect link in "%s" to token "%s"`, mdFileSource.Filename, token)
 					} else {
 						changed = true
-						fmt.Printf("Updated link in \"%s\" to token \"%s\" -> \"%s:%d\"\n", mdFilename, token, locRelPath, loc.lineNum)
+						fmt.Printf("Updated link in \"%s\" to token \"%s\" -> \"%s:%d\"\n", mdFileSource.Filename, token, locRelPath, loc.lineNum)
 						return []byte(replacement)
 					}
 				}
@@ -369,9 +404,9 @@ func processMarkdownFile(config Config, mdFilename string, tokenMap TokenMap, un
 	}
 
 	if changed {
-		err := os.WriteFile(mdFilename, fileBytes, 0)
+		err := os.WriteFile(mdFileSource.Filename, fileBytes, 0)
 		if err != nil {
-			return fmt.Errorf(`failed to write "%s": %w`, mdFilename, err)
+			return fmt.Errorf(`failed to write "%s": %w`, mdFileSource.Filename, err)
 		}
 	}
 
@@ -386,4 +421,22 @@ func generateToken() string {
 	}
 
 	return base58.Encode(buf)
+}
+
+func splitNull(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if atEOF && len(data) == 0 {
+		return 0, nil, nil
+	}
+
+	if i := bytes.IndexByte(data, 0); i >= 0 {
+		return i + 1, data[0:i], nil
+	}
+
+	// If we're at EOF, we have a final, non-terminated line. Return it.
+	if atEOF {
+		return len(data), data, nil
+	}
+
+	// Request more data.
+	return 0, nil, nil
 }
