@@ -39,3 +39,17 @@ data "google_iam_policy" "eyecue-codemap" {
     ]
   }
 }
+
+data "google_iam_workload_identity_pool" "pool" {
+  # This pool is defined in the eyecuelab/devops repo
+  provider                  = google-beta
+  workload_identity_pool_id = "github-actions"
+}
+
+resource "google_service_account_iam_binding" "github-actions" {
+  service_account_id = google_service_account.eyecue-codemap-ci.id
+  role               = "roles/iam.workloadIdentityUser"
+  members = [
+    "principalSet://iam.googleapis.com/projects/442505215313/locations/global/workloadIdentityPools/github-actions/attribute.repository/eyecuelab/codemap"
+  ]
+}

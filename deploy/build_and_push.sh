@@ -21,7 +21,7 @@ export DOCKER_BUILDKIT=1
 docker build . --progress=plain --build-arg VERSION="$version" --target linux-final -t "$image_prefix-linux"
 docker build . --progress=plain --build-arg VERSION="$version" --target darwin-final -t "$image_prefix-darwin"
 
-echo "$GOOGLE_AUTH_JSON" | docker login -u _json_key --password-stdin https://us-central1-docker.pkg.dev
+gcloud auth print-access-token | docker login -u oauth2accesstoken --password-stdin https://us-central1-docker.pkg.dev
 
 docker push "$image_prefix-linux"
 docker push "$image_prefix-darwin"

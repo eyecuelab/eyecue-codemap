@@ -3,12 +3,20 @@ on:
   push:
     branches: [ master ]
   workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      GOOGLE_AUTH_JSON: ${{ secrets.GOOGLE_AUTH_JSON }}
     steps:
       - uses: actions/checkout@v2
+      - id: auth
+        name: Authenticate to GCP
+        uses: 'google-github-actions/auth@v0'
+        with:
+          workload_identity_provider: 'projects/442505215313/locations/global/workloadIdentityPools/github-actions/providers/github-oidc'
+          service_account: 'eyecue-codemap-ci@eyecue-ops.iam.gserviceaccount.com'
+          token_format: 'access_token'
       - name: Docker build and push
         run: ./deploy/build_and_push.sh "$(git rev-parse --short HEAD)"
