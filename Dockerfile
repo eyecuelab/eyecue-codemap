@@ -22,18 +22,34 @@ RUN cd /build && GOOS=linux go mod download -x && GOOS=darwin go mod download -x
 # This layer will rebuild on any change.
 
 COPY . /build
+
+
+FROM builder AS linux-builder
+
 ARG VERSION
+
 RUN cd /build && \
     GOOS=linux go build -ldflags="-s -w -X main.Version=$VERSION" -o eyecue-codemap-linux . && \
+    ./upx --brute eyecue-codemap-linux
+
+
+FROM builder AS darwin-builder
+
+ARG VERSION
+
+RUN cd /build && \
     GOOS=darwin go build -ldflags="-s -w -X main.Version=$VERSION" -o eyecue-codemap-darwin . && \
-    ./upx --brute eyecue-codemap-linux eyecue-codemap-darwin
+    ./upx --brute eyecue-codemap-darwin
 
 
 # There will be separate container images for each platform,
 # each containing only the executable itself.
 
 FROM scratch AS linux-final
-COPY --from=builder /build/eyecue-codemap-linux /bin/eyecue-codemap
+
+COPY --from=linux-builder /build/eyecue-codemap-linux /bin/eyecue-codemap
+
 
 FROM scratch AS darwin-final
-COPY --from=builder /build/eyecue-codemap-darwin /bin/eyecue-codemap
+
+COPY --from=darwin-builder /build/eyecue-codemap-darwin /bin/eyecue-codemap

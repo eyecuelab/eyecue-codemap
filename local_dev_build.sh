@@ -6,4 +6,6 @@ set -euo pipefail
 
 image_prefix="us-central1-docker.pkg.dev/eyecue-ops/eyecue-codemap/eyecue-codemap"
 
-docker build . --target linux-final -t "$image_prefix-linux"
+export DOCKER_BUILDKIT=1
+
+docker build . --build-arg VERSION="dev" --target linux-final -t "$image_prefix-linux"
