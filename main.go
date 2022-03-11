@@ -101,18 +101,22 @@ func run(config Config) error {
 	}
 
 	unusedTokens := make(map[string]struct{})
+	var dupTokensErrs []string
 
 	for token, tokenLocs := range tokenMap {
-		// detect duplicate tokens
 		if len(tokenLocs) > 1 {
 			errMsg := fmt.Sprintf("duplicate token \"%s\" at:", token)
 			for _, tokenLoc := range tokenLocs {
 				errMsg = fmt.Sprintf("%s\n   %s:%d", errMsg, tokenLoc.filename, tokenLoc.lineNum)
 			}
-			return errors.New(errMsg)
+			dupTokensErrs = append(dupTokensErrs, errMsg)
 		}
 
 		unusedTokens[token] = struct{}{}
+	}
+
+	if len(dupTokensErrs) > 0 {
+		return errors.New(strings.Join(dupTokensErrs, "\n"))
 	}
 
 	// update the Markdown files
@@ -124,9 +128,15 @@ func run(config Config) error {
 	}
 
 	// show unused tokens
+	var unusedTokenErrs []string
 	for token := range unusedTokens {
 		tokenLoc := tokenMap[token][0]
 		msg := fmt.Sprintf("unused token %s at %s:%d", token, tokenLoc.filename, tokenLoc.lineNum)
+		unusedTokenErrs = append(unusedTokenErrs, msg)
+	}
+
+	if len(unusedTokenErrs) > 0 {
+		msg := strings.Join(unusedTokenErrs, "\n")
 		if config.NoUnused {
 			return errors.New(msg)
 		} else {
