@@ -16,8 +16,10 @@ curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/insta
 
 image_prefix="us-central1-docker.pkg.dev/eyecue-ops/eyecue-codemap/eyecue-codemap"
 
-docker build . --build-arg VERSION="$version" --target linux-final -t "$image_prefix-linux"
-docker build . --build-arg VERSION="$version" --target darwin-final -t "$image_prefix-darwin"
+export DOCKER_BUILDKIT=1
+
+docker build . --progress=plain --build-arg VERSION="$version" --target linux-final -t "$image_prefix-linux"
+docker build . --progress=plain --build-arg VERSION="$version" --target darwin-final -t "$image_prefix-darwin"
 
 echo "$GOOGLE_AUTH_JSON" | docker login -u _json_key --password-stdin https://us-central1-docker.pkg.dev
 
