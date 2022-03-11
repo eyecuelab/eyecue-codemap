@@ -9,6 +9,7 @@ import (
 	"github.com/akamensky/base58"
 	"github.com/mattn/go-isatty"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -41,6 +42,7 @@ var Version string = "dev"
 
 type Config struct {
 	CheckOnly bool
+	GitIndex  bool
 	NoUnused  bool
 }
 
@@ -51,17 +53,24 @@ func main() {
 		switch arg {
 		case "--help", "-h":
 			fmt.Printf("eyecue-codemap version %s\n"+
-				"Usage: eyecue-codemap [--check-only] [--no-unused]\n"+
-				"Pipe in a list of filenames to stdin, one per line.\n", Version)
+				"Usage: eyecue-codemap [--check-only] [--git-index] [--no-unused]\n"+
+				"If not using --git-index, pipe in a list of filenames to stdin, one per line.\n", Version)
 			os.Exit(0)
 		case "--check-only":
 			config.CheckOnly = true
+		case "--git-index":
+			config.GitIndex = true
 		case "--no-unused":
 			config.NoUnused = true
 		default:
 			fmt.Printf("ERROR: unrecognized argument: %s\n", arg)
 			os.Exit(2)
 		}
+	}
+
+	if config.GitIndex && !config.CheckOnly {
+		fmt.Println("ERROR: --check-only must be specified when using --git-index")
+		os.Exit(2)
 	}
 
 	err := run(config)
@@ -76,11 +85,21 @@ func main() {
 func run(config Config) error {
 	fmt.Printf("eyecue-codemap %s running...", Version)
 	if config.CheckOnly {
-		fmt.Printf(" (check only)")
+		if config.GitIndex {
+			fmt.Printf(" (check only, Git index)")
+		} else {
+			fmt.Printf(" (check only)")
+		}
 	}
 	fmt.Println()
 
-	filenames, err := readFilenamesFromStdin()
+	var filenames []string
+	var err error
+	if config.GitIndex {
+		filenames, err = readFilenamesFromGitIndex()
+	} else {
+		filenames, err = readFilenamesFromStdin()
+	}
 	if err != nil {
 		return err
 	}
@@ -156,13 +175,64 @@ func readFilenamesFromStdin() ([]string, error) {
 
 	scn := bufio.NewScanner(os.Stdin)
 	for scn.Scan() {
-		filenames = append(filenames, scn.Text())
+		filename := scn.Text()
+
+		stat, err := os.Lstat(filename)
+		if err != nil {
+			return nil, fmt.Errorf(`failed to stat "%s": %w`, filename, err)
+		}
+		if stat.Mode().IsRegular() && stat.Size() < 10*1024*1024 {
+			filenames = append(filenames, filename)
+		}
 	}
 	if scn.Err() != nil {
-		return nil, fmt.Errorf("failed to read list of filenames: %w", scn.Err())
+		return nil, fmt.Errorf("failed to read list of filenames from stdin: %w", scn.Err())
 	}
 
 	return filenames, nil
+}
+
+var spacesRegexp = regexp.MustCompile(`\s+`)
+
+func readFilenamesFromGitIndex() ([]string, error) {
+	cmd := exec.Command("git", "ls-files", "--stage")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("failed to run git ls-files: %s: %w", strings.TrimSpace(string(output)), err)
+	}
+
+	var filenames []string
+
+	scn := bufio.NewScanner(bytes.NewReader(output))
+	for scn.Scan() {
+		line := scn.Text()
+
+		// filter out non-files
+		if !strings.HasPrefix(line, "100") {
+			continue
+		}
+
+		// Output looks like:
+		// 100644 b438169c25a6cf5649e09d8d51092998fa4e904e 0	Dockerfile
+		parts := spacesRegexp.Split(line, 4)
+		filename := parts[3]
+		filenames = append(filenames, filename)
+	}
+	if scn.Err() != nil {
+		return nil, fmt.Errorf("failed to read list of filenames from git: %w", scn.Err())
+	}
+
+	return filenames, nil
+}
+
+func readFileFromGitIndex(filename string) ([]byte, error) {
+	cmd := exec.Command("git", "show", ":"+filename)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("git show :%s failed: %w", filename, err)
+	}
+
+	return output, err
 }
 
 func processFile(config Config, filename string, tokenMap TokenMap) error {
@@ -172,15 +242,14 @@ func processFile(config Config, filename string, tokenMap TokenMap) error {
 		}
 	}
 
-	stat, err := os.Lstat(filename)
-	if err != nil {
-		return fmt.Errorf(`failed to stat "%s": %w`, filename, err)
-	}
-	if !stat.Mode().IsRegular() || stat.Size() > 10*1024*1024 {
-		return nil
-	}
+	var fileBytes []byte
+	var err error
 
-	fileBytes, err := os.ReadFile(filename)
+	if config.GitIndex {
+		fileBytes, err = readFileFromGitIndex(filename)
+	} else {
+		fileBytes, err = os.ReadFile(filename)
+	}
 	if err != nil {
 		return fmt.Errorf(`failed to read "%s": %w`, filename, err)
 	}
@@ -243,7 +312,15 @@ func processFile(config Config, filename string, tokenMap TokenMap) error {
 
 func processMarkdownFile(config Config, mdFilename string, tokenMap TokenMap, unusedTokens map[string]struct{}) error {
 	mdFilenameDir := filepath.Dir(mdFilename)
-	fileBytes, err := os.ReadFile(mdFilename)
+
+	var fileBytes []byte
+	var err error
+
+	if config.GitIndex {
+		fileBytes, err = readFileFromGitIndex(mdFilename)
+	} else {
+		fileBytes, err = os.ReadFile(mdFilename)
+	}
 	if err != nil {
 		return fmt.Errorf(`failed to read "%s": %w`, mdFilename, err)
 	}
