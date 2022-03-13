@@ -13,6 +13,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -40,11 +41,20 @@ var ignoreExtensions = []string{
 
 var Version string = "dev"
 
+type FilenameSource int
+
+const (
+	FilenameSourceStdin FilenameSource = iota
+	FilenameSourceStdinNul
+	FilenameSourceGit
+	FilenameSourceGitIndex
+)
+
 type Config struct {
-	CheckOnly bool
-	GitIndex  bool
-	NoUnused  bool
-	Verbose   bool
+	CheckOnly      bool
+	FilenameSource FilenameSource
+	NoUnused       bool
+	Verbose        bool
 }
 
 type FileSource struct {
@@ -64,10 +74,16 @@ func main() {
 			os.Exit(0)
 		case "--check-only":
 			config.CheckOnly = true
+		case "--git":
+			config.FilenameSource = FilenameSourceGit
 		case "--git-index":
-			config.GitIndex = true
+			config.FilenameSource = FilenameSourceGitIndex
 		case "--no-unused":
 			config.NoUnused = true
+		case "--stdin":
+			config.FilenameSource = FilenameSourceStdin
+		case "--stdin0":
+			config.FilenameSource = FilenameSourceStdinNul
 		case "--verbose":
 			config.Verbose = true
 		default:
@@ -76,7 +92,7 @@ func main() {
 		}
 	}
 
-	if config.GitIndex && !config.CheckOnly {
+	if config.FilenameSource == FilenameSourceGitIndex && !config.CheckOnly {
 		fmt.Println("ERROR: --check-only must be specified when using --git-index")
 		os.Exit(2)
 	}
@@ -93,24 +109,43 @@ func main() {
 func run(config Config) error {
 	fmt.Printf("eyecue-codemap %s running...", Version)
 	if config.CheckOnly {
-		if config.GitIndex {
-			fmt.Printf(" (check only, Git index)")
-		} else {
-			fmt.Printf(" (check only)")
-		}
+		fmt.Printf(" (check only)")
 	}
 	fmt.Println()
 
 	var fileSources []FileSource
 	var err error
-	if config.GitIndex {
+
+	switch config.FilenameSource {
+	case FilenameSourceGit:
+		if config.Verbose {
+			fmt.Println("Reading filenames from Git")
+		}
+		fileSources, err = readFilenamesFromGit()
+	case FilenameSourceGitIndex:
+		if config.Verbose {
+			fmt.Println("Reading filenames from Git index")
+		}
 		fileSources, err = readFilenamesFromGitIndex()
-	} else {
-		fileSources, err = readFilenamesFromStdin()
+	case FilenameSourceStdin:
+		if config.Verbose {
+			fmt.Println("Reading filenames from stdin")
+		}
+		fileSources, err = readFilenamesFromStdin(false)
+	case FilenameSourceStdinNul:
+		if config.Verbose {
+			fmt.Println("Reading filenames from stdin (NUL delimited)")
+		}
+		fileSources, err = readFilenamesFromStdin(true)
 	}
+
 	if err != nil {
 		return err
 	}
+
+	sort.Slice(fileSources, func(i, j int) bool {
+		return fileSources[i].Filename < fileSources[j].Filename
+	})
 
 	tokenMap := make(TokenMap)
 	var mdFileSources []FileSource
@@ -174,7 +209,20 @@ func run(config Config) error {
 	return nil
 }
 
-func readFilenamesFromStdin() ([]FileSource, error) {
+func shouldIncludeFile(filename string) (bool, error) {
+	stat, err := os.Lstat(filename)
+	if err != nil {
+		return false, fmt.Errorf(`failed to stat "%s": %w`, filename, err)
+	}
+
+	if stat.Mode().IsRegular() && stat.Size() < 10*1024*1024 {
+		return true, nil
+	}
+
+	return false, nil
+}
+
+func readFilenamesFromStdin(nulDelimiter bool) ([]FileSource, error) {
 	if isatty.IsTerminal(os.Stdin.Fd()) {
 		fmt.Println("WARNING: reading filenames from stdin. Did you forget to pipe in a list of filenames?")
 	}
@@ -182,14 +230,18 @@ func readFilenamesFromStdin() ([]FileSource, error) {
 	var fileSources []FileSource
 
 	scn := bufio.NewScanner(os.Stdin)
+	if nulDelimiter {
+		scn.Split(splitNull)
+	}
 	for scn.Scan() {
-		filename := scn.Text()
+		filename := strings.TrimPrefix(scn.Text(), "./")
 
-		stat, err := os.Lstat(filename)
+		shouldInclude, err := shouldIncludeFile(filename)
 		if err != nil {
-			return nil, fmt.Errorf(`failed to stat "%s": %w`, filename, err)
+			return nil, err
 		}
-		if stat.Mode().IsRegular() && stat.Size() < 10*1024*1024 {
+
+		if shouldInclude {
 			fileSources = append(fileSources, FileSource{
 				Filename:     filename,
 				FromGitIndex: false,
@@ -198,6 +250,49 @@ func readFilenamesFromStdin() ([]FileSource, error) {
 	}
 	if scn.Err() != nil {
 		return nil, fmt.Errorf("failed to read list of filenames from stdin: %w", scn.Err())
+	}
+
+	return fileSources, nil
+}
+
+func readFilenamesFromGit() ([]FileSource, error) {
+	cmd := exec.Command("git", "diff-files", "--name-only", "--diff-filter=D", "-z")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("failed to run git diff-files: %s: %w", strings.TrimSpace(string(output)), err)
+	}
+
+	deletedFilenames := make(map[string]struct{})
+
+	for _, filenameBytes := range bytes.Split(output, []byte{0}) {
+		deletedFilenames[string(filenameBytes)] = struct{}{}
+	}
+
+	cmd = exec.Command("git", "ls-files", "--cached", "--others", "--exclude-standard", "-z")
+	output, err = cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("failed to run git ls-files: %s: %w", strings.TrimSpace(string(output)), err)
+	}
+
+	var fileSources []FileSource
+
+	for _, filenameBytes := range bytes.Split(output, []byte{0}) {
+		filename := string(filenameBytes)
+		if _, isDeleted := deletedFilenames[filename]; isDeleted {
+			continue
+		}
+
+		shouldInclude, err := shouldIncludeFile(filename)
+		if err != nil {
+			return nil, err
+		}
+
+		if shouldInclude {
+			fileSources = append(fileSources, FileSource{
+				Filename:     filename,
+				FromGitIndex: false,
+			})
+		}
 	}
 
 	return fileSources, nil
@@ -231,7 +326,7 @@ func readFilenamesFromGitIndex() ([]FileSource, error) {
 		return nil, fmt.Errorf("failed to run git ls-files: %s: %w", strings.TrimSpace(string(output)), err)
 	}
 
-	var filenames []FileSource
+	var fileSources []FileSource
 
 	scn = bufio.NewScanner(bytes.NewReader(output))
 	scn.Split(splitNull)
@@ -248,7 +343,7 @@ func readFilenamesFromGitIndex() ([]FileSource, error) {
 		parts := spacesRegexp.Split(line, 4)
 		filename := parts[3]
 		_, isStaged := stagedFilenames[filename]
-		filenames = append(filenames, FileSource{
+		fileSources = append(fileSources, FileSource{
 			Filename:     filename,
 			FromGitIndex: isStaged,
 		})
@@ -257,7 +352,7 @@ func readFilenamesFromGitIndex() ([]FileSource, error) {
 		return nil, fmt.Errorf("failed to scan git ls-files output: %w", scn.Err())
 	}
 
-	return filenames, nil
+	return fileSources, nil
 }
 
 func readFileFromGitIndex(filename string) ([]byte, error) {
