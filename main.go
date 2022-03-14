@@ -301,7 +301,7 @@ func readFilenamesFromGit() ([]FileSource, error) {
 var spacesRegexp = regexp.MustCompile(`\s+`)
 
 func readFilenamesFromGitIndex() ([]FileSource, error) {
-	// Determine which files are staged and must be read from the Git index vs. the working dir
+	// Determine which files are modified+staged and must be read from the Git index vs. the working dir
 	cmd := exec.Command("git", "diff-index", "--name-only", "-z", "HEAD")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -310,13 +310,8 @@ func readFilenamesFromGitIndex() ([]FileSource, error) {
 
 	stagedFilenames := make(map[string]struct{})
 
-	scn := bufio.NewScanner(bytes.NewReader(output))
-	scn.Split(splitNull)
-	for scn.Scan() {
-		stagedFilenames[scn.Text()] = struct{}{}
-	}
-	if scn.Err() != nil {
-		return nil, fmt.Errorf("failed to scan git diff-index output: %w", scn.Err())
+	for _, filenameBytes := range bytes.Split(output, []byte{0}) {
+		stagedFilenames[string(filenameBytes)] = struct{}{}
 	}
 
 	// Get a list of all filenames in the Git index
@@ -328,10 +323,8 @@ func readFilenamesFromGitIndex() ([]FileSource, error) {
 
 	var fileSources []FileSource
 
-	scn = bufio.NewScanner(bytes.NewReader(output))
-	scn.Split(splitNull)
-	for scn.Scan() {
-		line := scn.Text()
+	for _, lineBytes := range bytes.Split(output, []byte{0}) {
+		line := string(lineBytes)
 
 		// filter out non-files
 		if !strings.HasPrefix(line, "100") {
@@ -347,9 +340,6 @@ func readFilenamesFromGitIndex() ([]FileSource, error) {
 			Filename:     filename,
 			FromGitIndex: isStaged,
 		})
-	}
-	if scn.Err() != nil {
-		return nil, fmt.Errorf("failed to scan git ls-files output: %w", scn.Err())
 	}
 
 	return fileSources, nil
