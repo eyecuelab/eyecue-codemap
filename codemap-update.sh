@@ -101,6 +101,8 @@ prepare_executable
 
 # ↓↓↓ CUSTOMIZE FROM HERE DOWN ↓↓↓
 
-# TODO: customize find command to your repo
-# TODO: cd to the root of your repo if needed
-find . -type d \( -path ./.git -o -path ./node_modules \) -prune -o -type f -print | "$executable" "$@"
+# run from the root of the repo
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
+cd "$script_dir/.."
+
+"$executable" --git "$@"
