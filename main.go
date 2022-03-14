@@ -107,35 +107,36 @@ func main() {
 }
 
 func run(config Config) error {
-	fmt.Printf("eyecue-codemap %s running...", Version)
-	if config.CheckOnly {
-		fmt.Printf(" (check only)")
+	var modeDesc string
+
+	switch config.FilenameSource {
+	case FilenameSourceGit:
+		modeDesc = "Git"
+	case FilenameSourceGitIndex:
+		modeDesc = "Git index"
+	case FilenameSourceStdin:
+		modeDesc = "stdin"
+	case FilenameSourceStdinNul:
+		modeDesc = "stdin, NUL delimited"
 	}
-	fmt.Println()
+
+	if config.CheckOnly {
+		modeDesc += ", check only"
+	}
+
+	fmt.Printf("eyecue-codemap %s running (filenames from %s) ...\n", Version, modeDesc)
 
 	var fileSources []FileSource
 	var err error
 
 	switch config.FilenameSource {
 	case FilenameSourceGit:
-		if config.Verbose {
-			fmt.Println("Reading filenames from Git")
-		}
 		fileSources, err = readFilenamesFromGit()
 	case FilenameSourceGitIndex:
-		if config.Verbose {
-			fmt.Println("Reading filenames from Git index")
-		}
 		fileSources, err = readFilenamesFromGitIndex()
 	case FilenameSourceStdin:
-		if config.Verbose {
-			fmt.Println("Reading filenames from stdin")
-		}
 		fileSources, err = readFilenamesFromStdin(false)
 	case FilenameSourceStdinNul:
-		if config.Verbose {
-			fmt.Println("Reading filenames from stdin (NUL delimited)")
-		}
 		fileSources, err = readFilenamesFromStdin(true)
 	}
 
