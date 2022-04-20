@@ -1,4 +1,4 @@
-FROM golang:1.17-bullseye AS builder
+FROM golang:1.17.9-bullseye AS builder
 
 # To improve performance when iterating locally with docker builds,
 # create a cached layer that doesn't depend on the source code.
