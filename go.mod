@@ -1,4 +1,4 @@
-module eyecuelab.com/codemap
+module eyecuelab.com/eyecue-codemap
 
 go 1.16
 

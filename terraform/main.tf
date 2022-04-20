@@ -2,7 +2,7 @@ resource "google_artifact_registry_repository" "eyecue-codemap" {
   provider = google-beta
   repository_id = "eyecue-codemap"
   location = "us-central1"
-  description = "https://github.com/eyecuelab/codemap"
+  description = "https://github.com/eyecuelab/eyecue-codemap"
   format = "DOCKER"
 }
 
