@@ -50,6 +50,6 @@ resource "google_service_account_iam_binding" "github-actions" {
   service_account_id = google_service_account.eyecue-codemap-ci.id
   role               = "roles/iam.workloadIdentityUser"
   members = [
-    "principalSet://iam.googleapis.com/projects/442505215313/locations/global/workloadIdentityPools/github-actions/attribute.repository/eyecuelab/codemap"
+    "principalSet://iam.googleapis.com/projects/442505215313/locations/global/workloadIdentityPools/github-actions/attribute.repository/eyecuelab/eyecue-codemap"
   ]
 }
