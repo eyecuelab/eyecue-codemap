@@ -446,51 +446,71 @@ func processMarkdownFile(config Config, mdFileSource FileSource, tokenMap TokenM
 		return fmt.Errorf(`failed to read "%s": %w`, mdFileSource.Filename, err)
 	}
 
-	var replaceErr error
 	changed := false
-	fileBytes = tokenRefRegexp.ReplaceAllFunc(fileBytes, func(m []byte) []byte {
-		if replaceErr != nil {
-			return fileBytes
+	var newFileBytes bytes.Buffer
+
+	lastLine := false
+	for lineNum := 1; !lastLine; lineNum++ {
+		var lineBytes []byte
+		newLineIndex := bytes.IndexByte(fileBytes, '\n')
+		if newLineIndex == -1 {
+			lineBytes = fileBytes
+			lastLine = true
+		} else {
+			lineBytes = fileBytes[:newLineIndex+1]
+			fileBytes = fileBytes[newLineIndex+1:]
 		}
 
-		tokenIndex := bytes.IndexByte(m, ':') + 1
-		tokenEndIndex := tokenIndex + bytes.IndexByte(m[tokenIndex:], '-')
-		token := string(m[tokenIndex:tokenEndIndex])
+		var replaceErr error
+		lineBytes = tokenRefRegexp.ReplaceAllFunc(lineBytes, func(m []byte) []byte {
+			if replaceErr != nil {
+				return m
+			}
 
-		tokenLocs := tokenMap[token]
-		if len(tokenLocs) == 0 {
-			replaceErr = fmt.Errorf(`token "%s" in "%s" was not found`, token, mdFileSource.Filename)
-		} else {
-			delete(unusedTokens, token)
+			tokenIndex := bytes.IndexByte(m, ':') + 1
+			tokenEndIndex := tokenIndex + bytes.IndexByte(m[tokenIndex:], '-')
+			token := string(m[tokenIndex:tokenEndIndex])
 
-			loc := tokenLocs[0]
-			locRelPath, err := filepath.Rel(mdFilenameDir, loc.filename)
-			if err != nil {
-				replaceErr = fmt.Errorf("filepath.Rel(%s, %s): %w", mdFilenameDir, loc.filename, err)
+			tokenLocs := tokenMap[token]
+			if len(tokenLocs) == 0 {
+				replaceErr = fmt.Errorf(`token "%s" at "%s:%d" was not found`, token, mdFileSource.Filename, lineNum)
 			} else {
-				original := string(m)
-				replacement := fmt.Sprintf("<!--eyecue-codemap:%s-->](%s#L%d)", token, locRelPath, loc.lineNum)
-				if original != replacement {
-					if config.CheckOnly {
-						replaceErr = fmt.Errorf(`incorrect link in "%s" to token "%s"`, mdFileSource.Filename, token)
-					} else {
-						changed = true
-						fmt.Printf("Updated link in \"%s\" to token \"%s\" -> \"%s:%d\"\n", mdFileSource.Filename, token, locRelPath, loc.lineNum)
-						return []byte(replacement)
+				delete(unusedTokens, token)
+
+				loc := tokenLocs[0]
+				locRelPath, err := filepath.Rel(mdFilenameDir, loc.filename)
+				if err != nil {
+					replaceErr = fmt.Errorf("filepath.Rel(%s, %s): %w", mdFilenameDir, loc.filename, err)
+				} else {
+					original := string(m)
+					replacement := fmt.Sprintf("<!--eyecue-codemap:%s-->](%s#L%d)", token, locRelPath, loc.lineNum)
+					if original != replacement {
+						if config.CheckOnly {
+							replaceErr = fmt.Errorf(`incorrect link at "%s:%d" token "%s"`, mdFileSource.Filename, lineNum, token)
+						} else {
+							changed = true
+							fmt.Printf("updated link at \"%s:%d\" token \"%s\" -> \"%s:%d\"\n", mdFileSource.Filename, lineNum, token, locRelPath, loc.lineNum)
+							return []byte(replacement)
+						}
 					}
 				}
 			}
+
+			return m
+		})
+
+		if replaceErr != nil {
+			return replaceErr
 		}
 
-		return m
-	})
-
-	if replaceErr != nil {
-		return replaceErr
+		_, err = newFileBytes.Write(lineBytes)
+		if err != nil {
+			return err
+		}
 	}
 
 	if changed {
-		err := os.WriteFile(mdFileSource.Filename, fileBytes, 0)
+		err := os.WriteFile(mdFileSource.Filename, newFileBytes.Bytes(), 0)
 		if err != nil {
 			return fmt.Errorf(`failed to write "%s": %w`, mdFileSource.Filename, err)
 		}
