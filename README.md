@@ -54,7 +54,7 @@ To integrate this into your repo, adapt the `codemap-update.sh` to your needs. T
 to get the eyecue-codemap executable onto the local machine. It will check for updates daily. The developer doesn't need
 to install or manage anything.
 
-See the [Powur Vision Gateway repo](https://github.com/eyecuelab/powur-vision-gateway) for an example integration with
+See the [Powur Vision repo](https://github.com/eyecuelab/powur-vision) for an example integration with
 the existing linting and Git hooks.
 
 # CI/CD
