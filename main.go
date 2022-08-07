@@ -18,8 +18,9 @@ import (
 )
 
 type TokenLocation struct {
-	filename string
-	lineNum  int
+	filename   string
+	lineNum    int
+	linkToFile bool
 }
 
 type TokenMap = map[string][]TokenLocation
@@ -400,11 +401,45 @@ func processFile(config Config, fileSource FileSource, tokenMap TokenMap) error 
 		}
 	}
 
+	// We'll link to the entire file (instead of a specific line) for any [eyecue-codemap] that:
+	// * Is preceded only by the shebang and/or blank lines
+	// * Is followed by a blank line or EOF
+	linkToFile := true
+
 	// inventory tokens
 	currentLine := 1
+	var line string
+	var peekLine bool
 	scn := bufio.NewScanner(bytes.NewReader(fileBytes))
-	for scn.Scan() {
-		m := tokenRegexp.FindAllSubmatch(scn.Bytes(), -1)
+	for {
+		if peekLine {
+			peekLine = false
+		} else {
+			if !scn.Scan() {
+				break
+			}
+			line = scn.Text()
+		}
+
+		doneScanning := false
+
+		m := tokenRegexp.FindAllStringSubmatch(line, -1)
+
+		// If we found a token, and we still think we want to link to the file,
+		// check the next line to make sure it's blank or EOF.
+		if linkToFile && len(m) > 0 {
+			if scn.Scan() {
+				peekLine = true
+				line = scn.Text()
+				if strings.TrimSpace(line) != "" {
+					linkToFile = false
+				}
+			} else {
+				// no more lines, we'll link to the file
+				doneScanning = true
+			}
+		}
+
 		for _, match := range m {
 			before := strings.TrimSpace(string(match[1]))
 			token := string(match[2])
@@ -420,10 +455,20 @@ func processFile(config Config, fileSource FileSource, tokenMap TokenMap) error 
 			}
 
 			tokenMap[token] = append(tokenMap[token], TokenLocation{
-				filename: fileSource.Filename,
-				lineNum:  lineNum,
+				filename:   fileSource.Filename,
+				lineNum:    lineNum,
+				linkToFile: linkToFile,
 			})
 		}
+
+		if doneScanning {
+			break
+		}
+
+		if linkToFile && !(strings.HasPrefix(line, "#!") || strings.TrimSpace(line) == "") {
+			linkToFile = false
+		}
+
 		currentLine++
 	}
 	if scn.Err() != nil {
@@ -483,13 +528,22 @@ func processMarkdownFile(config Config, mdFileSource FileSource, tokenMap TokenM
 					replaceErr = fmt.Errorf("filepath.Rel(%s, %s): %w", mdFilenameDir, loc.filename, err)
 				} else {
 					original := string(m)
-					replacement := fmt.Sprintf("<!--eyecue-codemap:%s-->](%s#L%d)", token, locRelPath, loc.lineNum)
+					var mdTarget string
+					var outputTarget string
+					if loc.linkToFile {
+						mdTarget = locRelPath
+						outputTarget = locRelPath
+					} else {
+						mdTarget = fmt.Sprintf("%s#L%d", locRelPath, loc.lineNum)
+						outputTarget = fmt.Sprintf("%s:%d", locRelPath, loc.lineNum)
+					}
+					replacement := fmt.Sprintf("<!--eyecue-codemap:%s-->](%s)", token, mdTarget)
 					if original != replacement {
 						if config.CheckOnly {
 							replaceErr = fmt.Errorf(`incorrect link at "%s:%d" token "%s"`, mdFileSource.Filename, lineNum, token)
 						} else {
 							changed = true
-							fmt.Printf("updated link at \"%s:%d\" token \"%s\" -> \"%s:%d\"\n", mdFileSource.Filename, lineNum, token, locRelPath, loc.lineNum)
+							fmt.Printf("updated link at \"%s:%d\" token \"%s\" -> \"%s\"\n", mdFileSource.Filename, lineNum, token, outputTarget)
 							return []byte(replacement)
 						}
 					}
