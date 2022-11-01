@@ -62,6 +62,18 @@ Here is how the link looks and behaves in the rendered Markdown:
 
 Here's the [secret<!--eyecue-codemap:4vov64BcsXn-->](example.js#L2) sauce.
 
+## Linking to files vs. linking to lines
+
+There are two flavors of links:
+
+1. Linking to an entire file (no line number):
+    * Put the magic `[eyecue-codemap]` comment at the top of the file you want to link to.
+    * The only lines that may precede the magic comment are the shebang line (e.g. `#!/bin/bash`) and/or blank lines.
+    * You must have at least one blank line after the magic comment.
+2. Linking to a specific line in a file:
+    * The line with the magic comment is the line that will be linked to.
+    * Except: if the magic comment is the _only_ thing on the line (with the exception of the language's comment markers), it will link to the following line.
+
 # Errors
 
 The updater will consider it an error when:
