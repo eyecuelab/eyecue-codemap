@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/rand"
+	"crypto/sha1"
 	"errors"
 	"fmt"
 	"github.com/akamensky/base58"
 	"github.com/mattn/go-isatty"
+	"hash"
 	"os"
 	"os/exec"
 	"path"
@@ -23,10 +25,24 @@ type TokenLocation struct {
 	linkToFile bool
 }
 
-type TokenMap = map[string][]TokenLocation
+type TokenGroupInfo struct {
+	token           string
+	fileSource      FileSource
+	startLineNumber int
+	endLineNumber   int
+	actualHash      string
+	expectedHash    string
+}
 
-var tokenNeededRegexp = regexp.MustCompile(`\[eyecue-codemap]`)
+type TokenMap struct {
+	Single map[string][]TokenLocation
+	Group  map[string][]TokenGroupInfo
+}
+
+var tokenNeededRegexp = regexp.MustCompile(`\[eyecue-codemap(-group)?]`)
 var tokenRegexp = regexp.MustCompile(`^(.*)\[eyecue-codemap:([A-Za-z0-9]+)](.*)$`)
+var tokenGroupStartRegexp = regexp.MustCompile(`\[eyecue-codemap-group:([A-Za-z0-9]+)]`)
+var tokenGroupEndRegexp = regexp.MustCompile(`\[end-eyecue-codemap-group:([A-Za-z0-9]+)(:([a-f0-9]{40}))?]`)
 var tokenRefRegexp = regexp.MustCompile(`<!--eyecue-codemap:[A-Za-z0-9]+-->]\(.*?\)`)
 
 var ignoreExtensions = []string{
@@ -53,6 +69,7 @@ const (
 )
 
 type Config struct {
+	AckGroups      bool
 	CheckOnly      bool
 	FilenameSource FilenameSource
 	NoUnused       bool
@@ -74,6 +91,8 @@ func main() {
 				"Usage: eyecue-codemap [--check-only] [--git-index] [--no-unused]\n"+
 				"If not using --git-index, pipe in a list of filenames to stdin, one per line.\n", Version)
 			os.Exit(0)
+		case "ack":
+			config.AckGroups = true
 		case "--check-only":
 			config.CheckOnly = true
 		case "--git":
@@ -96,6 +115,11 @@ func main() {
 
 	if config.FilenameSource == FilenameSourceGitIndex && !config.CheckOnly {
 		fmt.Println("ERROR: --check-only must be specified when using --git-index")
+		os.Exit(2)
+	}
+
+	if config.AckGroups && config.CheckOnly {
+		fmt.Println("ERROR: cannot specify both ack and --check-only")
 		os.Exit(2)
 	}
 
@@ -150,7 +174,10 @@ func run(config Config) error {
 		return fileSources[i].Filename < fileSources[j].Filename
 	})
 
-	tokenMap := make(TokenMap)
+	tokenMap := TokenMap{
+		Single: map[string][]TokenLocation{},
+		Group:  map[string][]TokenGroupInfo{},
+	}
 	var mdFileSources []FileSource
 
 	// inventory each input file, generating tokens and updating them if needed
@@ -168,7 +195,7 @@ func run(config Config) error {
 	unusedTokens := make(map[string]struct{})
 	var dupTokensErrs []string
 
-	for token, tokenLocs := range tokenMap {
+	for token, tokenLocs := range tokenMap.Single {
 		if len(tokenLocs) > 1 {
 			errMsg := fmt.Sprintf("duplicate token \"%s\" at:", token)
 			for _, tokenLoc := range tokenLocs {
@@ -195,7 +222,7 @@ func run(config Config) error {
 	// show unused tokens
 	var unusedTokenErrs []string
 	for token := range unusedTokens {
-		tokenLoc := tokenMap[token][0]
+		tokenLoc := tokenMap.Single[token][0]
 		msg := fmt.Sprintf("unused token %s at %s:%d", token, tokenLoc.filename, tokenLoc.lineNum)
 		unusedTokenErrs = append(unusedTokenErrs, msg)
 	}
@@ -207,6 +234,121 @@ func run(config Config) error {
 		} else {
 			fmt.Println(msg)
 		}
+	}
+
+	// Process groups
+	if config.AckGroups {
+		return ackTokenGroups(config, tokenMap)
+	} else {
+		return checkTokenGroups(tokenMap)
+	}
+}
+
+func ackTokenGroups(config Config, tokenMap TokenMap) error {
+	groupInfosByFile := map[string][]TokenGroupInfo{}
+
+	for _, groupInfos := range tokenMap.Group {
+		for _, groupInfo := range groupInfos {
+			if groupInfo.actualHash != groupInfo.expectedHash {
+				groupInfosByFile[groupInfo.fileSource.Filename] = append(groupInfosByFile[groupInfo.fileSource.Filename], groupInfo)
+			}
+		}
+	}
+
+	for _, groupInfos := range groupInfosByFile {
+		err := ackTokenGroupsForFile(config, groupInfos)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func ackTokenGroupsForFile(config Config, groupInfos []TokenGroupInfo) (err error) {
+	fileSource := groupInfos[0].fileSource
+
+	fileBytes, err := readFile(config, fileSource)
+	if err != nil {
+		return err
+	}
+
+	file, err := os.OpenFile(fileSource.Filename, os.O_TRUNC|os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		closeErr := file.Close()
+		if err == nil {
+			err = closeErr
+		}
+	}()
+
+	scn := bufio.NewScanner(bytes.NewReader(fileBytes))
+	scn.Split(scanLinesWithNewlines)
+	currentLine := 0
+	for scn.Scan() {
+		currentLine++
+		lineBytes := scn.Bytes()
+		for _, groupInfo := range groupInfos {
+			if groupInfo.endLineNumber == currentLine {
+				lineBytes = tokenGroupEndRegexp.ReplaceAll(
+					lineBytes,
+					[]byte(fmt.Sprintf(
+						"[end-eyecue-codemap-group:%s:%s]",
+						groupInfo.token,
+						groupInfo.actualHash,
+					)))
+			}
+		}
+
+		_, err := file.Write(lineBytes)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func checkTokenGroups(tokenMap TokenMap) error {
+	showAckMessage := false
+
+	for groupName, groupInfos := range tokenMap.Group {
+		showGroup := false
+
+		for _, groupInfo := range groupInfos {
+			if groupInfo.actualHash != groupInfo.expectedHash {
+				showGroup = true
+				break
+			}
+		}
+
+		if showGroup {
+			showAckMessage = true
+			sort.Slice(groupInfos, func(i, j int) bool {
+				return groupInfos[i].fileSource.Filename < groupInfos[j].fileSource.Filename
+			})
+			fmt.Printf("group \"%s\" has changes (indicated with *):\n", groupName)
+			for _, groupInfo := range groupInfos {
+				indicator := " "
+				if groupInfo.actualHash != groupInfo.expectedHash {
+					indicator = "*"
+				}
+
+				fmt.Printf("  %s  %s:%d (lines %d-%d)\n",
+					indicator,
+					groupInfo.fileSource.Filename,
+					groupInfo.startLineNumber,
+					groupInfo.startLineNumber+1,
+					groupInfo.endLineNumber-1,
+				)
+			}
+		}
+	}
+
+	if showAckMessage {
+		return errors.New(`edit groups as needed, then run the "ack" command`)
 	}
 
 	return nil
@@ -234,7 +376,7 @@ func readFilenamesFromStdin(nulDelimiter bool) ([]FileSource, error) {
 
 	scn := bufio.NewScanner(os.Stdin)
 	if nulDelimiter {
-		scn.Split(splitNull)
+		scn.Split(scanNullDelimited)
 	}
 	for scn.Scan() {
 		filename := strings.TrimPrefix(scn.Text(), "./")
@@ -372,6 +514,73 @@ func readFile(config Config, fileSource FileSource) ([]byte, error) {
 	return os.ReadFile(fileSource.Filename)
 }
 
+func processTokenGroups(fileSource FileSource, fileBytes []byte, tokenMap TokenMap) error {
+	type CurrentGroup struct {
+		Hasher          hash.Hash
+		Token           string
+		StartLineNumber int
+	}
+	var currentGroup *CurrentGroup
+
+	currentLine := 1
+
+	scn := bufio.NewScanner(bytes.NewReader(fileBytes))
+	scn.Split(scanLinesWithNewlines)
+	for scn.Scan() {
+		line := scn.Text()
+
+		groupMatch := tokenGroupEndRegexp.FindStringSubmatch(line)
+		if len(groupMatch) > 0 {
+			token := groupMatch[1]
+			expectedHash := groupMatch[3]
+
+			if currentGroup == nil {
+				return fmt.Errorf(`end-eyecue-codemap-group for unknown group "%s" (%s:%d)`, token, fileSource.Filename, currentLine)
+			}
+
+			tokenMap.Group[token] = append(tokenMap.Group[token], TokenGroupInfo{
+				token:           token,
+				fileSource:      fileSource,
+				startLineNumber: currentGroup.StartLineNumber,
+				endLineNumber:   currentLine,
+				actualHash:      fmt.Sprintf("%x", currentGroup.Hasher.Sum(nil)),
+				expectedHash:    expectedHash,
+			})
+
+			currentGroup = nil
+		}
+
+		if currentGroup != nil {
+			_, err := currentGroup.Hasher.Write(scn.Bytes())
+			if err != nil {
+				return err
+			}
+		}
+
+		groupMatch = tokenGroupStartRegexp.FindStringSubmatch(line)
+		if len(groupMatch) > 0 {
+			token := groupMatch[1]
+			if currentGroup != nil {
+				return fmt.Errorf(`overlapping eyecue-codemap-group "%s" not allowed (%s:%d)`, token, fileSource.Filename, currentLine)
+			}
+
+			currentGroup = &CurrentGroup{
+				Hasher:          sha1.New(),
+				Token:           token,
+				StartLineNumber: currentLine,
+			}
+		}
+
+		currentLine++
+	}
+
+	if currentGroup != nil {
+		return fmt.Errorf("unclosed eyecue-codemap-group in %s", fileSource.Filename)
+	}
+
+	return nil
+}
+
 func processFile(config Config, fileSource FileSource, tokenMap TokenMap) error {
 	for _, ext := range ignoreExtensions {
 		if strings.HasSuffix(fileSource.Filename, ext) {
@@ -387,11 +596,11 @@ func processFile(config Config, fileSource FileSource, tokenMap TokenMap) error 
 	// generate tokens
 	if !config.CheckOnly {
 		changed := false
-		fileBytes = tokenNeededRegexp.ReplaceAllFunc(fileBytes, func(_ []byte) []byte {
+		fileBytes = tokenNeededRegexp.ReplaceAllFunc(fileBytes, func(matched []byte) []byte {
 			changed = true
 			token := generateToken()
 			fmt.Printf("Added new token \"%s\" to \"%s\"\n", token, fileSource.Filename)
-			return []byte("[eyecue-codemap:" + token + "]")
+			return []byte("[" + string(matched[1:len(matched)-1]) + ":" + token + "]")
 		})
 
 		if changed {
@@ -400,6 +609,11 @@ func processFile(config Config, fileSource FileSource, tokenMap TokenMap) error 
 				return fmt.Errorf(`failed to write "%s": %w`, fileSource.Filename, err)
 			}
 		}
+	}
+
+	err = processTokenGroups(fileSource, fileBytes, tokenMap)
+	if err != nil {
+		return err
 	}
 
 	// We'll link to the entire file (instead of a specific line) for any [eyecue-codemap] that:
@@ -455,7 +669,7 @@ func processFile(config Config, fileSource FileSource, tokenMap TokenMap) error 
 				lineNum++
 			}
 
-			tokenMap[token] = append(tokenMap[token], TokenLocation{
+			tokenMap.Single[token] = append(tokenMap.Single[token], TokenLocation{
 				filename:   fileSource.Filename,
 				lineNum:    lineNum,
 				linkToFile: linkToFile,
@@ -517,7 +731,7 @@ func processMarkdownFile(config Config, mdFileSource FileSource, tokenMap TokenM
 			tokenEndIndex := tokenIndex + bytes.IndexByte(m[tokenIndex:], '-')
 			token := string(m[tokenIndex:tokenEndIndex])
 
-			tokenLocs := tokenMap[token]
+			tokenLocs := tokenMap.Single[token]
 			if len(tokenLocs) == 0 {
 				replaceErr = fmt.Errorf(`token "%s" at "%s:%d" was not found`, token, mdFileSource.Filename, lineNum)
 			} else {
@@ -582,22 +796,4 @@ func generateToken() string {
 	}
 
 	return base58.Encode(buf)
-}
-
-func splitNull(data []byte, atEOF bool) (advance int, token []byte, err error) {
-	if atEOF && len(data) == 0 {
-		return 0, nil, nil
-	}
-
-	if i := bytes.IndexByte(data, 0); i >= 0 {
-		return i + 1, data[0:i], nil
-	}
-
-	// If we're at EOF, we have a final, non-terminated line. Return it.
-	if atEOF {
-		return len(data), data, nil
-	}
-
-	// Request more data.
-	return 0, nil, nil
 }
