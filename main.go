@@ -815,11 +815,16 @@ func processMarkdownFile(config Config, mdFileSource FileSource, tokenMap TokenM
 		templateData := make([]GroupTemplateData, len(groupInfos))
 		for i, groupInfo := range groupInfos {
 			fileAndLine := fmt.Sprintf("%s:%d", groupInfo.fileSource.Filename, groupInfo.startLineNumber)
+			locRelPath, err := filepath.Rel(mdFilenameDir, groupInfo.fileSource.Filename)
+			if err != nil {
+				replaceErr = err
+				return m
+			}
 			templateData[i] = GroupTemplateData{
 				File:        groupInfo.fileSource.Filename,
 				Line:        groupInfo.startLineNumber,
 				FileAndLine: fileAndLine,
-				Link:        fmt.Sprintf("[%s](%s)", fileAndLine, fileAndLine),
+				Link:        fmt.Sprintf("[%s](%s)", fileAndLine, fmt.Sprintf("%s#L%d", locRelPath, groupInfo.startLineNumber)),
 			}
 		}
 
