@@ -30,6 +30,7 @@ var tokenRegexp = regexp.MustCompile(`^(.*)\[eyecue-codemap:([A-Za-z0-9]+)](.*)$
 var tokenRefRegexp = regexp.MustCompile(`<!--eyecue-codemap:[A-Za-z0-9]+-->]\(.*?\)`)
 
 var ignoreExtensions = []string{
+	".csv",
 	".jpeg",
 	".jpg",
 	".otf",
