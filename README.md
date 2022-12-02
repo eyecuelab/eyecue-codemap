@@ -270,6 +270,12 @@ function bar() {
 // [end-eyecue-codemap-group:UuLzD7n96cD:3be4ca7b3a0b2322b6a4ef9598f04d1430b1910c]
 ```
 
+## Generating Lists of Links in Markdown
+
+In your Markdown, you can generate lists of all of the code blocks for a specified `eyecue-codemap-group`.
+
+See [example-groups.md](./example-groups.md) for an working example. The template syntax is Go's [text/template](https://pkg.go.dev/text/template).
+
 # Installation
 
 To integrate this into your repo, adapt `codemap-update.sh` to your needs. This script contains all the code needed

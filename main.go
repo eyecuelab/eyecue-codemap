@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"text/template"
 )
 
 type TokenLocation struct {
@@ -44,6 +45,7 @@ var tokenRegexp = regexp.MustCompile(`^(.*)\[eyecue-codemap:([A-Za-z0-9]+)](.*)$
 var tokenGroupStartRegexp = regexp.MustCompile(`\[eyecue-codemap-group:([A-Za-z0-9]+)]`)
 var tokenGroupEndRegexp = regexp.MustCompile(`\[end-eyecue-codemap-group:([A-Za-z0-9]+)(:([a-f0-9]{40}))?]`)
 var tokenRefRegexp = regexp.MustCompile(`<!--eyecue-codemap:[A-Za-z0-9]+-->]\(.*?\)`)
+var tokenGroupRefRegexp = regexp.MustCompile(`(?s)(<!--eyecue-codemap-group:([A-Za-z0-9]+):(.+?)-->).*?(<!--end-eyecue-codemap-group-->)`)
 
 var ignoreExtensions = []string{
 	".csv",
@@ -708,6 +710,7 @@ func processMarkdownFile(config Config, mdFileSource FileSource, tokenMap TokenM
 
 	changed := false
 	var newFileBytes bytes.Buffer
+	var replaceErr error
 
 	lastLine := false
 	for lineNum := 1; !lastLine; lineNum++ {
@@ -721,7 +724,6 @@ func processMarkdownFile(config Config, mdFileSource FileSource, tokenMap TokenM
 			fileBytes = fileBytes[newLineIndex+1:]
 		}
 
-		var replaceErr error
 		lineBytes = tokenRefRegexp.ReplaceAllFunc(lineBytes, func(m []byte) []byte {
 			if replaceErr != nil {
 				return m
@@ -778,8 +780,79 @@ func processMarkdownFile(config Config, mdFileSource FileSource, tokenMap TokenM
 		}
 	}
 
+	fileBytes = tokenGroupRefRegexp.ReplaceAllFunc(newFileBytes.Bytes(), func(m []byte) []byte {
+		if replaceErr != nil {
+			return m
+		}
+
+		ms := tokenGroupRefRegexp.FindSubmatch(m)
+		startTag := ms[1]
+		token := string(ms[2])
+		templateText := string(ms[3])
+		endTag := ms[4]
+
+		groupInfos := tokenMap.Group[token]
+
+		if len(groupInfos) == 0 {
+			// TODO: get the line number into this error message
+			replaceErr = fmt.Errorf(`group token "%s" in "%s" was not found`, token, mdFileSource.Filename)
+			return m
+		}
+
+		tpl, err := template.New("").Parse(templateText)
+		if err != nil {
+			replaceErr = err
+			return m
+		}
+
+		type GroupTemplateData struct {
+			File        string
+			Line        int
+			FileAndLine string
+			Link        string
+		}
+
+		templateData := make([]GroupTemplateData, len(groupInfos))
+		for i, groupInfo := range groupInfos {
+			fileAndLine := fmt.Sprintf("%s:%d", groupInfo.fileSource.Filename, groupInfo.startLineNumber)
+			templateData[i] = GroupTemplateData{
+				File:        groupInfo.fileSource.Filename,
+				Line:        groupInfo.startLineNumber,
+				FileAndLine: fileAndLine,
+				Link:        fmt.Sprintf("[%s](%s)", fileAndLine, fileAndLine),
+			}
+		}
+
+		var b bytes.Buffer
+		_, err = b.Write(startTag)
+		if err != nil {
+			panic(err)
+		}
+		err = b.WriteByte('\n')
+		if err != nil {
+			panic(err)
+		}
+		err = tpl.Execute(&b, templateData)
+		if err != nil {
+			replaceErr = err
+			return m
+		}
+		_, err = b.Write(endTag)
+		if err != nil {
+			panic(err)
+		}
+
+		changed = true
+
+		return b.Bytes()
+	})
+
+	if replaceErr != nil {
+		return replaceErr
+	}
+
 	if changed {
-		err := os.WriteFile(mdFileSource.Filename, newFileBytes.Bytes(), 0)
+		err := os.WriteFile(mdFileSource.Filename, fileBytes, 0)
 		if err != nil {
 			return fmt.Errorf(`failed to write "%s": %w`, mdFileSource.Filename, err)
 		}
