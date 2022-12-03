@@ -59,7 +59,7 @@ var ignoreExtensions = []string{
 	".woff2",
 }
 
-var Version string = "dev"
+var Version = "dev"
 
 type FilenameSource int
 
@@ -658,9 +658,9 @@ func processFile(config Config, fileSource FileSource, tokenMap TokenMap) error 
 		}
 
 		for _, match := range m {
-			before := strings.TrimSpace(string(match[1]))
-			token := string(match[2])
-			after := strings.TrimSpace(string(match[3]))
+			before := strings.TrimSpace(match[1])
+			token := match[2]
+			after := strings.TrimSpace(match[3])
 
 			// If the only thing on the line is the codemap comment,
 			// link to the next line. Add more comment strings here as needed.
