@@ -806,10 +806,11 @@ func processMarkdownFile(config Config, mdFileSource FileSource, tokenMap TokenM
 		}
 
 		type GroupTemplateData struct {
-			File        string
-			Line        int
-			FileAndLine string
-			Link        string
+			File         string
+			Line         int
+			FileAndLine  string
+			FileAndRange string
+			Link         string
 		}
 
 		templateData := make([]GroupTemplateData, len(groupInfos))
@@ -822,19 +823,21 @@ func processMarkdownFile(config Config, mdFileSource FileSource, tokenMap TokenM
 				return m
 			}
 
-			link := fmt.Sprintf(
-				"[%s](%s#L%d-L%d)",
-				fileAndLine,
+			fileAndRange := fmt.Sprintf(
+				"%s#L%d-L%d",
 				locRelPath,
 				groupInfo.startLineNumber+1,
 				groupInfo.endLineNumber-1,
 			)
 
+			link := fmt.Sprintf("[%s](%s)", fileAndLine, fileAndRange)
+
 			templateData[i] = GroupTemplateData{
-				File:        groupInfo.fileSource.Filename,
-				Line:        groupInfo.startLineNumber,
-				FileAndLine: fileAndLine,
-				Link:        link,
+				File:         groupInfo.fileSource.Filename,
+				Line:         groupInfo.startLineNumber,
+				FileAndLine:  fileAndLine,
+				FileAndRange: fileAndRange,
+				Link:         link,
 			}
 		}
 
