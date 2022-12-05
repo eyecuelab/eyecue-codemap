@@ -158,6 +158,10 @@ func run(config Config) error {
 		modeDesc += ", check only"
 	}
 
+	if config.AckGroups {
+		modeDesc += ", ack groups"
+	}
+
 	fmt.Printf("eyecue-codemap %s running (filenames from %s) ...\n", Version, modeDesc)
 
 	var fileSources []FileSource
