@@ -274,7 +274,7 @@ function bar() {
 
 In your Markdown, you can generate lists of all of the code blocks for a specified `eyecue-codemap-group`.
 
-See [example-groups.md](./example-groups.md) for an working example. The template syntax is Go's [text/template](https://pkg.go.dev/text/template).
+See [example-groups.md](./example-groups.md) for a working example. The template syntax is Go's [text/template](https://pkg.go.dev/text/template).
 
 # Installation
 
