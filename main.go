@@ -3,20 +3,24 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha1"
 	"errors"
 	"fmt"
 	"github.com/akamensky/base58"
 	"github.com/mattn/go-isatty"
+	"golang.org/x/sync/errgroup"
 	"hash"
 	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"text/template"
 )
 
@@ -35,9 +39,11 @@ type TokenGroupInfo struct {
 	expectedHash    string
 }
 
-type TokenMap struct {
-	Single map[string][]TokenLocation
-	Group  map[string][]TokenGroupInfo
+type FileInventory struct {
+	SinglesByToken      map[string][]TokenLocation
+	GroupsByToken       map[string][]TokenGroupInfo
+	MarkdownFileSources []FileSource
+	sync.Mutex
 }
 
 var tokenNeededRegexp = regexp.MustCompile(`\[eyecue-codemap(-group)?]`)
@@ -167,37 +173,19 @@ func run(config Config) error {
 	case FilenameSourceStdinNul:
 		fileSources, err = readFilenamesFromStdin(true)
 	}
-
 	if err != nil {
 		return err
 	}
 
-	sort.Slice(fileSources, func(i, j int) bool {
-		return fileSources[i].Filename < fileSources[j].Filename
-	})
-
-	tokenMap := TokenMap{
-		Single: map[string][]TokenLocation{},
-		Group:  map[string][]TokenGroupInfo{},
-	}
-	var mdFileSources []FileSource
-
-	// inventory each input file, generating tokens and updating them if needed
-	for _, fileSource := range fileSources {
-		err := processFile(config, fileSource, tokenMap)
-		if err != nil {
-			return err
-		}
-
-		if strings.ToLower(path.Ext(fileSource.Filename)) == ".md" {
-			mdFileSources = append(mdFileSources, fileSource)
-		}
+	fileInventory, err := inventoryFiles(config, fileSources)
+	if err != nil {
+		return err
 	}
 
 	unusedTokens := make(map[string]struct{})
 	var dupTokensErrs []string
 
-	for token, tokenLocs := range tokenMap.Single {
+	for token, tokenLocs := range fileInventory.SinglesByToken {
 		if len(tokenLocs) > 1 {
 			errMsg := fmt.Sprintf("duplicate token \"%s\" at:", token)
 			for _, tokenLoc := range tokenLocs {
@@ -214,8 +202,8 @@ func run(config Config) error {
 	}
 
 	// check or update the Markdown files
-	for _, fileSource := range mdFileSources {
-		err := processMarkdownFile(config, fileSource, tokenMap, unusedTokens)
+	for _, fileSource := range fileInventory.MarkdownFileSources {
+		err := processMarkdownFile(config, fileSource, fileInventory, unusedTokens)
 		if err != nil {
 			return err
 		}
@@ -224,7 +212,7 @@ func run(config Config) error {
 	// show unused tokens
 	var unusedTokenErrs []string
 	for token := range unusedTokens {
-		tokenLoc := tokenMap.Single[token][0]
+		tokenLoc := fileInventory.SinglesByToken[token][0]
 		msg := fmt.Sprintf("unused token %s at %s:%d", token, tokenLoc.filename, tokenLoc.lineNum)
 		unusedTokenErrs = append(unusedTokenErrs, msg)
 	}
@@ -240,16 +228,65 @@ func run(config Config) error {
 
 	// Process groups
 	if config.AckGroups {
-		return ackTokenGroups(config, tokenMap)
+		return ackTokenGroups(config, fileInventory)
 	} else {
-		return checkTokenGroups(tokenMap)
+		return checkTokenGroups(fileInventory)
 	}
 }
 
-func ackTokenGroups(config Config, tokenMap TokenMap) error {
+func inventoryFiles(config Config, fileSources []FileSource) (*FileInventory, error) {
+	fileInventory := &FileInventory{
+		SinglesByToken: map[string][]TokenLocation{},
+		GroupsByToken:  map[string][]TokenGroupInfo{},
+	}
+
+	fileSourcesCh := make(chan FileSource, len(fileSources))
+	for _, fileSource := range fileSources {
+		fileSourcesCh <- fileSource
+	}
+	close(fileSourcesCh)
+
+	wg, wgCtx := errgroup.WithContext(context.Background())
+	wg.SetLimit(runtime.GOMAXPROCS(0))
+LOOP:
+	for {
+		select {
+		case <-wgCtx.Done():
+			break LOOP
+		case fileSource, ok := <-fileSourcesCh:
+			if !ok {
+				break LOOP
+			}
+
+			wg.Go(func() error {
+				err := processFile(config, fileSource, fileInventory)
+				if err != nil {
+					return err
+				}
+
+				if strings.ToLower(path.Ext(fileSource.Filename)) == ".md" {
+					fileInventory.Lock()
+					fileInventory.MarkdownFileSources = append(fileInventory.MarkdownFileSources, fileSource)
+					fileInventory.Unlock()
+				}
+
+				return nil
+			})
+		}
+	}
+
+	err := wg.Wait()
+	if err != nil {
+		return nil, err
+	}
+
+	return fileInventory, nil
+}
+
+func ackTokenGroups(config Config, fileInventory *FileInventory) error {
 	groupInfosByFile := map[string][]TokenGroupInfo{}
 
-	for _, groupInfos := range tokenMap.Group {
+	for _, groupInfos := range fileInventory.GroupsByToken {
 		for _, groupInfo := range groupInfos {
 			if groupInfo.actualHash != groupInfo.expectedHash {
 				groupInfosByFile[groupInfo.fileSource.Filename] = append(groupInfosByFile[groupInfo.fileSource.Filename], groupInfo)
@@ -313,10 +350,10 @@ func ackTokenGroupsForFile(config Config, groupInfos []TokenGroupInfo) (err erro
 	return nil
 }
 
-func checkTokenGroups(tokenMap TokenMap) error {
+func checkTokenGroups(fileInventory *FileInventory) error {
 	showAckMessage := false
 
-	for groupName, groupInfos := range tokenMap.Group {
+	for groupName, groupInfos := range fileInventory.GroupsByToken {
 		showGroup := false
 
 		for _, groupInfo := range groupInfos {
@@ -516,7 +553,7 @@ func readFile(config Config, fileSource FileSource) ([]byte, error) {
 	return os.ReadFile(fileSource.Filename)
 }
 
-func processTokenGroups(fileSource FileSource, fileBytes []byte, tokenMap TokenMap) error {
+func processTokenGroups(fileSource FileSource, fileBytes []byte, fileInventory *FileInventory) error {
 	type CurrentGroup struct {
 		Hasher          hash.Hash
 		Token           string
@@ -540,7 +577,8 @@ func processTokenGroups(fileSource FileSource, fileBytes []byte, tokenMap TokenM
 				return fmt.Errorf(`end-eyecue-codemap-group for unknown group "%s" (%s:%d)`, token, fileSource.Filename, currentLine)
 			}
 
-			tokenMap.Group[token] = append(tokenMap.Group[token], TokenGroupInfo{
+			fileInventory.Lock()
+			fileInventory.GroupsByToken[token] = append(fileInventory.GroupsByToken[token], TokenGroupInfo{
 				token:           token,
 				fileSource:      fileSource,
 				startLineNumber: currentGroup.StartLineNumber,
@@ -548,6 +586,7 @@ func processTokenGroups(fileSource FileSource, fileBytes []byte, tokenMap TokenM
 				actualHash:      fmt.Sprintf("%x", currentGroup.Hasher.Sum(nil)),
 				expectedHash:    expectedHash,
 			})
+			fileInventory.Unlock()
 
 			currentGroup = nil
 		}
@@ -583,7 +622,7 @@ func processTokenGroups(fileSource FileSource, fileBytes []byte, tokenMap TokenM
 	return nil
 }
 
-func processFile(config Config, fileSource FileSource, tokenMap TokenMap) error {
+func processFile(config Config, fileSource FileSource, fileInventory *FileInventory) error {
 	for _, ext := range ignoreExtensions {
 		if strings.HasSuffix(fileSource.Filename, ext) {
 			return nil
@@ -613,7 +652,7 @@ func processFile(config Config, fileSource FileSource, tokenMap TokenMap) error 
 		}
 	}
 
-	err = processTokenGroups(fileSource, fileBytes, tokenMap)
+	err = processTokenGroups(fileSource, fileBytes, fileInventory)
 	if err != nil {
 		return err
 	}
@@ -671,11 +710,13 @@ func processFile(config Config, fileSource FileSource, tokenMap TokenMap) error 
 				lineNum++
 			}
 
-			tokenMap.Single[token] = append(tokenMap.Single[token], TokenLocation{
+			fileInventory.Lock()
+			fileInventory.SinglesByToken[token] = append(fileInventory.SinglesByToken[token], TokenLocation{
 				filename:   fileSource.Filename,
 				lineNum:    lineNum,
 				linkToFile: linkToFile,
 			})
+			fileInventory.Unlock()
 		}
 
 		if doneScanning {
@@ -700,7 +741,7 @@ func processFile(config Config, fileSource FileSource, tokenMap TokenMap) error 
 	return nil
 }
 
-func processMarkdownFile(config Config, mdFileSource FileSource, tokenMap TokenMap, unusedTokens map[string]struct{}) error {
+func processMarkdownFile(config Config, mdFileSource FileSource, fileInventory *FileInventory, unusedTokens map[string]struct{}) error {
 	mdFilenameDir := filepath.Dir(mdFileSource.Filename)
 
 	fileBytes, err := readFile(config, mdFileSource)
@@ -733,7 +774,7 @@ func processMarkdownFile(config Config, mdFileSource FileSource, tokenMap TokenM
 			tokenEndIndex := tokenIndex + bytes.IndexByte(m[tokenIndex:], '-')
 			token := string(m[tokenIndex:tokenEndIndex])
 
-			tokenLocs := tokenMap.Single[token]
+			tokenLocs := fileInventory.SinglesByToken[token]
 			if len(tokenLocs) == 0 {
 				replaceErr = fmt.Errorf(`token "%s" at "%s:%d" was not found`, token, mdFileSource.Filename, lineNum)
 			} else {
@@ -791,7 +832,7 @@ func processMarkdownFile(config Config, mdFileSource FileSource, tokenMap TokenM
 		templateText := string(ms[3])
 		endTag := ms[4]
 
-		groupInfos := tokenMap.Group[token]
+		groupInfos := fileInventory.GroupsByToken[token]
 
 		if len(groupInfos) == 0 {
 			// TODO: get the line number into this error message
