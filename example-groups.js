@@ -1,4 +1,4 @@
-// [eyecue-codemap-group:UuLzD7n96cD]
+// [eyecue-codemap-group:UuLzD7n96cD:The "foo" function]
 function foo() {
   return "something else";
 }

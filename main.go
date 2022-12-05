@@ -32,6 +32,7 @@ type TokenLocation struct {
 
 type TokenGroupInfo struct {
 	token           string
+	title           string
 	fileSource      FileSource
 	startLineNumber int
 	endLineNumber   int
@@ -48,7 +49,7 @@ type FileInventory struct {
 
 var tokenNeededRegexp = regexp.MustCompile(`\[eyecue-codemap(-group)?]`)
 var tokenRegexp = regexp.MustCompile(`^(.*)\[eyecue-codemap:([A-Za-z0-9]+)](.*)$`)
-var tokenGroupStartRegexp = regexp.MustCompile(`\[eyecue-codemap-group:([A-Za-z0-9]+)]`)
+var tokenGroupStartRegexp = regexp.MustCompile(`\[eyecue-codemap-group:([A-Za-z0-9]+)(:([^\]]+))?]`)
 var tokenGroupEndRegexp = regexp.MustCompile(`\[end-eyecue-codemap-group:([A-Za-z0-9]+)(:([a-f0-9]{40}))?]`)
 var tokenRefRegexp = regexp.MustCompile(`<!--eyecue-codemap:[A-Za-z0-9]+-->]\(.*?\)`)
 var tokenGroupRefRegexp = regexp.MustCompile(`(?s)(<!--eyecue-codemap-group:([A-Za-z0-9]+):(.+?)-->).*?(<!--end-eyecue-codemap-group-->)`)
@@ -379,12 +380,18 @@ func checkTokenGroups(fileInventory *FileInventory) error {
 					indicator = "*"
 				}
 
-				fmt.Printf("  %s  %s:%d (lines %d-%d)\n",
+				var titleSuffix string
+				if groupInfo.title != "" {
+					titleSuffix = fmt.Sprintf(`"%s"`, groupInfo.title)
+				}
+
+				fmt.Printf("  %s  %s:%d (lines %d-%d)%s\n",
 					indicator,
 					groupInfo.fileSource.Filename,
 					groupInfo.startLineNumber,
 					groupInfo.startLineNumber+1,
 					groupInfo.endLineNumber-1,
+					titleSuffix,
 				)
 			}
 		}
@@ -560,6 +567,7 @@ func readFile(config Config, fileSource FileSource) ([]byte, error) {
 func processTokenGroups(fileSource FileSource, fileBytes []byte, fileInventory *FileInventory) error {
 	type CurrentGroup struct {
 		Hasher          hash.Hash
+		Title           string
 		Token           string
 		StartLineNumber int
 	}
@@ -584,6 +592,7 @@ func processTokenGroups(fileSource FileSource, fileBytes []byte, fileInventory *
 			fileInventory.Lock()
 			fileInventory.GroupsByToken[token] = append(fileInventory.GroupsByToken[token], TokenGroupInfo{
 				token:           token,
+				title:           currentGroup.Title,
 				fileSource:      fileSource,
 				startLineNumber: currentGroup.StartLineNumber,
 				endLineNumber:   currentLine,
@@ -605,12 +614,14 @@ func processTokenGroups(fileSource FileSource, fileBytes []byte, fileInventory *
 		groupMatch = tokenGroupStartRegexp.FindStringSubmatch(line)
 		if len(groupMatch) > 0 {
 			token := groupMatch[1]
+			title := groupMatch[3]
 			if currentGroup != nil {
 				return fmt.Errorf(`overlapping eyecue-codemap-group "%s" not allowed (%s:%d)`, token, fileSource.Filename, currentLine)
 			}
 
 			currentGroup = &CurrentGroup{
 				Hasher:          sha1.New(),
+				Title:           title,
 				Token:           token,
 				StartLineNumber: currentLine,
 			}
@@ -855,6 +866,7 @@ func processMarkdownFile(config Config, mdFileSource FileSource, fileInventory *
 			Line              int
 			FileLine          string
 			RangeHref         string
+			Title             string
 			MarkdownRangeLink string
 		}
 
@@ -875,13 +887,19 @@ func processMarkdownFile(config Config, mdFileSource FileSource, fileInventory *
 				groupInfo.endLineNumber-1,
 			)
 
-			markdownRangeLink := fmt.Sprintf("[%s](%s)", fileLine, rangeHref)
+			title := fileLine
+			if groupInfo.title != "" {
+				title = fmt.Sprintf("%s (%s)", fileLine, groupInfo.title)
+			}
+
+			markdownRangeLink := fmt.Sprintf("[%s](%s)", title, rangeHref)
 
 			templateData[i] = GroupTemplateData{
 				File:              groupInfo.fileSource.Filename,
 				Line:              groupInfo.startLineNumber,
 				FileLine:          fileLine,
 				RangeHref:         rangeHref,
+				Title:             title,
 				MarkdownRangeLink: markdownRangeLink,
 			}
 		}
