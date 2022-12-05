@@ -60,12 +60,14 @@ prepare_executable() {
     done
     [[ -z $tempdir ]] && { echo "ERROR: could not locate system temp directory"; exit 1; }
 
+    tmpexe="$tempdir/$executable"
 
     # We'll check for updates once per day
     datefile="$tempdir/$executable.date"
     today=$(date '+%Y-%m-%d')
     if [[ ! -f $datefile || $(< "$datefile") != "$today" ]]; then
         echo 'eyecue-codemap checking for updates ...'
+        rm -f "$tmpexe"
         docker_config_path="$tempdir/eyecue-temp-docker"
         echo "$gcp_auth_json" \
           | docker --config "$docker_config_path" login -u _json_key --password-stdin "https://${image%%/*}" 2>&1 \
@@ -78,20 +80,22 @@ prepare_executable() {
         rm -rf "$docker_config_path"
     fi
 
-    # Create an unstarted docker container for the image. This allows us to
-    # copy the executable file out of the image and into the local machine's temp directory.
-    cid=$(docker create "$image" --)
+    if [[ ! -x "$tmpexe" ]]; then
+        # Create an unstarted docker container for the image. This allows us to
+        # copy the executable file out of the image and into the local machine's temp directory.
+        cid=$(docker create "$image" --)
 
-    # Delete the unstarted container at the end of this script (even if it exits with an error).
-    cleanup() {
-        docker rm -f "$cid" >/dev/null
-    }
-    trap cleanup EXIT
+        # Delete the unstarted container at the end of this script (even if it exits with an error).
+        cleanup() {
+            docker rm -f "$cid" >/dev/null
+        }
+        trap cleanup EXIT
 
-    # Copy the executable file out of the image.
-    docker cp "$cid:/bin/$executable" - | tar -x --directory "$tempdir"
+        # Copy the executable file out of the image.
+        docker cp "$cid:/bin/$executable" - | tar -x --directory "$tempdir"
+    fi
 
-    executable="$tempdir/$executable"
+    executable="$tmpexe"
 }
 
 kernel=$(uname -s|tr '[:upper:]' '[:lower:]')
