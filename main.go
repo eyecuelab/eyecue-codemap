@@ -284,6 +284,16 @@ LOOP:
 		return nil, err
 	}
 
+	for _, groupInfos := range fileInventory.GroupsByToken {
+		sort.Slice(groupInfos, func(i, j int) bool {
+			if groupInfos[i].fileSource.Filename == groupInfos[j].fileSource.Filename {
+				return groupInfos[i].startLineNumber < groupInfos[j].startLineNumber
+			}
+
+			return groupInfos[i].fileSource.Filename < groupInfos[j].fileSource.Filename
+		})
+	}
+
 	return fileInventory, nil
 }
 
