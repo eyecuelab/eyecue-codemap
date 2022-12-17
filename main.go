@@ -401,7 +401,7 @@ func checkTokenGroups(fileInventory *FileInventory) error {
 	}
 
 	if showAckMessage {
-		return errors.New(`edit groups as needed, then run the "ack" command`)
+		return errors.New(`edit groups as needed, then re-run with the "ack" argument`)
 	}
 
 	return nil

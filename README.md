@@ -135,7 +135,7 @@ Save the file, and run `codemap-update.sh`. It will exit with an error:
 ```
 group "UuLzD7n96cD" has changes (indicated with *):
   *  example-groups.js:1 (lines 2-4)
-eyecue-codemap error: edit groups as needed, then run the "ack" command
+eyecue-codemap error: edit groups as needed, then re-run with the "ack" argument
 ```
 
 Assume we have the `foo` function how we want it. To tell eyecue-codemap that we are happy with **all** existing `eyecue-codemap-group` blocks, run `codemap-update.sh ack`.
@@ -177,7 +177,7 @@ Save the file and run `codemap-update.sh`.
 group "UuLzD7n96cD" has changes (indicated with *):
      example-groups.js:1 (lines 2-4)
   *  example-groups.js:7 (lines 8-10)
-eyecue-codemap error: edit groups as needed, then run the "ack" command
+eyecue-codemap error: edit groups as needed, then re-run with the "ack" argument
 ```
 
 This indicates that the first block is unchanged, but the second block does not have a matching hash.
@@ -227,7 +227,7 @@ Running `codemap-update.sh` shows:
 group "UuLzD7n96cD" has changes (indicated with *):
   *  example-groups.js:1 (lines 2-4)
      example-groups.js:7 (lines 8-10)
-eyecue-codemap error: edit groups as needed, then run the "ack" command
+eyecue-codemap error: edit groups as needed, then re-run with the "ack" argument
 ```
 
 Next, modify `bar`:
@@ -251,7 +251,7 @@ Then run `codemap-update.sh`:
 group "UuLzD7n96cD" has changes (indicated with *):
   *  example-groups.js:1 (lines 2-4)
   *  example-groups.js:7 (lines 8-10)
-eyecue-codemap error: edit groups as needed, then run the "ack" command
+eyecue-codemap error: edit groups as needed, then re-run with the "ack" argument
 ```
 
 Finally, when you're happy with each block of code, run `codemap-update.sh ack`. You'll see the hashes have been updated:
