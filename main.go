@@ -186,6 +186,13 @@ func run(config Config) error {
 		return err
 	}
 
+	// Prohibit tokens from being used in both groups and single-line locations.
+	for token := range fileInventory.SinglesByToken {
+		if _, ok := fileInventory.GroupsByToken[token]; ok {
+			return fmt.Errorf("cannot use same token for group and single-line: %s", token)
+		}
+	}
+
 	unusedTokens := make(map[string]struct{})
 	var dupTokensErrs []string
 
