@@ -1,7 +1,6 @@
 terraform {
   backend "gcs" {
     bucket = "eyecue-ops-terraform"
-    credentials = "GCP-serviceacct_eyecue-ops_eyecue-ops-terraform.json"
     prefix = "eyecue-codemap"
   }
 }
