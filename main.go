@@ -8,9 +8,6 @@ import (
 	"crypto/sha1"
 	"errors"
 	"fmt"
-	"github.com/akamensky/base58"
-	"github.com/mattn/go-isatty"
-	"golang.org/x/sync/errgroup"
 	"hash"
 	"os"
 	"os/exec"
@@ -22,6 +19,10 @@ import (
 	"strings"
 	"sync"
 	"text/template"
+
+	"github.com/akamensky/base58"
+	"github.com/mattn/go-isatty"
+	"golang.org/x/sync/errgroup"
 )
 
 type TokenLocation struct {
@@ -51,7 +52,7 @@ var tokenRegexp = regexp.MustCompile(`^(.*)\[eyecue-codemap:([A-Za-z0-9]+)](.*)$
 var tokenGroupStartRegexp = regexp.MustCompile(`\[eyecue-codemap-group:([A-Za-z0-9]+)]`)
 var tokenGroupEndRegexp = regexp.MustCompile(`\[end-eyecue-codemap-group:([A-Za-z0-9]+)(:([a-f0-9]{40}))?]`)
 var tokenRefRegexp = regexp.MustCompile(`<!--eyecue-codemap:[A-Za-z0-9]+-->]\(.*?\)`)
-var tokenGroupRefRegexp = regexp.MustCompile(`(?s)(<!--eyecue-codemap-group:([A-Za-z0-9]+):(.+?)-->).*?(<!--end-eyecue-codemap-group-->)`)
+var tokenGroupRefRegexp = regexp.MustCompile(`(?s)(<!--eyecue-codemap-group:([A-Za-z0-9]+):(.+?)-->)\n(.*?)(<!--end-eyecue-codemap-group-->)`)
 
 var ignoreExtensions = []string{
 	".csv",
@@ -133,7 +134,8 @@ func main() {
 
 	err := run(config)
 	if err != nil {
-		fmt.Printf("eyecue-codemap error: %v\n", err)
+		fmt.Printf("ERROR: %v\n", err)
+		fmt.Println("eyecue-codemap completed with errors")
 		os.Exit(1)
 	}
 
@@ -224,7 +226,7 @@ func run(config Config) error {
 	var unusedTokenErrs []string
 	for token := range unusedTokens {
 		tokenLoc := fileInventory.SinglesByToken[token][0]
-		msg := fmt.Sprintf("unused token %s at %s:%d", token, tokenLoc.filename, tokenLoc.lineNum)
+		msg := fmt.Sprintf(`unused token "%s" at %s:%d`, token, tokenLoc.filename, tokenLoc.lineNum)
 		unusedTokenErrs = append(unusedTokenErrs, msg)
 	}
 
@@ -762,17 +764,60 @@ func processFile(config Config, fileSource FileSource, fileInventory *FileInvent
 	return nil
 }
 
-func processMarkdownFile(config Config, mdFileSource FileSource, fileInventory *FileInventory, unusedTokens map[string]struct{}) error {
-	mdFilenameDir := filepath.Dir(mdFileSource.Filename)
+type markdownContext struct {
+	Changed       bool
+	CheckErrors   []string
+	CheckOny      bool
+	FileBytes     []byte
+	FileInventory *FileInventory
+	Filename      string
+	FilenameDir   string
+	UnusedTokens  map[string]struct{}
+}
 
+func processMarkdownFile(config Config, mdFileSource FileSource, fileInventory *FileInventory, unusedTokens map[string]struct{}) error {
 	fileBytes, err := readFile(config, mdFileSource)
 	if err != nil {
 		return fmt.Errorf(`failed to read "%s": %w`, mdFileSource.Filename, err)
 	}
 
-	changed := false
-	var newFileBytes bytes.Buffer
-	var replaceErr error
+	mdContext := &markdownContext{
+		CheckOny:      config.CheckOnly,
+		FileBytes:     fileBytes,
+		FileInventory: fileInventory,
+		Filename:      mdFileSource.Filename,
+		FilenameDir:   filepath.Dir(mdFileSource.Filename),
+		UnusedTokens:  unusedTokens,
+	}
+
+	err = updateTokenRefs(mdContext)
+	if err != nil {
+		return err
+	}
+
+	err = renderMarkdownGroupTemplates(mdContext)
+	if err != nil {
+		return err
+	}
+
+	if config.CheckOnly {
+		if len(mdContext.CheckErrors) > 0 {
+			fmt.Println(strings.Join(mdContext.CheckErrors, "\n"))
+		}
+	} else if mdContext.Changed {
+		err := os.WriteFile(mdFileSource.Filename, mdContext.FileBytes, 0)
+		if err != nil {
+			return fmt.Errorf(`failed to write "%s": %w`, mdFileSource.Filename, err)
+		}
+	}
+
+	return nil
+}
+
+func updateTokenRefs(mdContext *markdownContext) error {
+	var resultBuf bytes.Buffer
+
+	fileBytes := mdContext.FileBytes
 
 	lastLine := false
 	for lineNum := 1; !lastLine; lineNum++ {
@@ -787,24 +832,20 @@ func processMarkdownFile(config Config, mdFileSource FileSource, fileInventory *
 		}
 
 		lineBytes = tokenRefRegexp.ReplaceAllFunc(lineBytes, func(m []byte) []byte {
-			if replaceErr != nil {
-				return m
-			}
-
 			tokenIndex := bytes.IndexByte(m, ':') + 1
 			tokenEndIndex := tokenIndex + bytes.IndexByte(m[tokenIndex:], '-')
 			token := string(m[tokenIndex:tokenEndIndex])
 
-			tokenLocs := fileInventory.SinglesByToken[token]
+			tokenLocs := mdContext.FileInventory.SinglesByToken[token]
 			if len(tokenLocs) == 0 {
-				replaceErr = fmt.Errorf(`token "%s" at "%s:%d" was not found`, token, mdFileSource.Filename, lineNum)
+				mdContext.CheckErrors = append(mdContext.CheckErrors, fmt.Sprintf(`token "%s" at "%s:%d" was not found`, token, mdContext.Filename, lineNum))
 			} else {
-				delete(unusedTokens, token)
+				delete(mdContext.UnusedTokens, token)
 
 				loc := tokenLocs[0]
-				locRelPath, err := filepath.Rel(mdFilenameDir, loc.filename)
+				locRelPath, err := filepath.Rel(mdContext.FilenameDir, loc.filename)
 				if err != nil {
-					replaceErr = fmt.Errorf("filepath.Rel(%s, %s): %w", mdFilenameDir, loc.filename, err)
+					panic(err)
 				} else {
 					original := string(m)
 					var mdTarget string
@@ -818,11 +859,11 @@ func processMarkdownFile(config Config, mdFileSource FileSource, fileInventory *
 					}
 					replacement := fmt.Sprintf("<!--eyecue-codemap:%s-->](%s)", token, mdTarget)
 					if original != replacement {
-						if config.CheckOnly {
-							replaceErr = fmt.Errorf(`incorrect link at "%s:%d" token "%s"`, mdFileSource.Filename, lineNum, token)
+						if mdContext.CheckOny {
+							mdContext.CheckErrors = append(mdContext.CheckErrors, fmt.Sprintf(`incorrect link at "%s:%d" token "%s"`, mdContext.Filename, lineNum, token))
 						} else {
-							changed = true
-							fmt.Printf("updated link at \"%s:%d\" token \"%s\" -> \"%s\"\n", mdFileSource.Filename, lineNum, token, outputTarget)
+							mdContext.Changed = true
+							fmt.Printf("updated link at \"%s:%d\" token \"%s\" -> \"%s\"\n", mdContext.Filename, lineNum, token, outputTarget)
 							return []byte(replacement)
 						}
 					}
@@ -832,39 +873,47 @@ func processMarkdownFile(config Config, mdFileSource FileSource, fileInventory *
 			return m
 		})
 
-		if replaceErr != nil {
-			return replaceErr
-		}
-
-		_, err = newFileBytes.Write(lineBytes)
+		_, err := resultBuf.Write(lineBytes)
 		if err != nil {
 			return err
 		}
 	}
 
-	fileBytes = tokenGroupRefRegexp.ReplaceAllFunc(newFileBytes.Bytes(), func(m []byte) []byte {
-		if replaceErr != nil {
-			return m
+	mdContext.FileBytes = resultBuf.Bytes()
+
+	return nil
+}
+
+func renderMarkdownGroupTemplates(mdContext *markdownContext) error {
+	var resultBuf bytes.Buffer
+
+	remainingIndex := 0
+
+	matches := tokenGroupRefRegexp.FindAllSubmatchIndex(mdContext.FileBytes, -1)
+	for _, match := range matches {
+		_, err := resultBuf.Write(mdContext.FileBytes[remainingIndex:match[0]])
+		if err != nil {
+			return err
 		}
 
-		ms := tokenGroupRefRegexp.FindSubmatch(m)
-		startTag := ms[1]
-		token := string(ms[2])
-		templateText := string(ms[3])
-		endTag := ms[4]
+		remainingIndex = match[1]
+		startTag := mdContext.FileBytes[match[2]:match[3]]
+		token := string(mdContext.FileBytes[match[4]:match[5]])
+		templateText := string(mdContext.FileBytes[match[6]:match[7]])
+		existingContent := mdContext.FileBytes[match[8]:match[9]]
+		endTag := mdContext.FileBytes[match[10]:match[11]]
 
-		groupInfos := fileInventory.GroupsByToken[token]
+		groupInfos := mdContext.FileInventory.GroupsByToken[token]
 
 		if len(groupInfos) == 0 {
 			// TODO: get the line number into this error message
-			replaceErr = fmt.Errorf(`group token "%s" in "%s" was not found`, token, mdFileSource.Filename)
-			return m
+			mdContext.CheckErrors = append(mdContext.CheckErrors, fmt.Sprintf(`group token "%s" in "%s" was not found`, token, mdContext.Filename))
+			continue
 		}
 
 		tpl, err := template.New("").Parse(templateText)
 		if err != nil {
-			replaceErr = err
-			return m
+			return err
 		}
 
 		type GroupTemplateData struct {
@@ -879,10 +928,9 @@ func processMarkdownFile(config Config, mdFileSource FileSource, fileInventory *
 		for i, groupInfo := range groupInfos {
 			fileLine := fmt.Sprintf("%s:%d", groupInfo.fileSource.Filename, groupInfo.startLineNumber)
 
-			locRelPath, err := filepath.Rel(mdFilenameDir, groupInfo.fileSource.Filename)
+			locRelPath, err := filepath.Rel(mdContext.FilenameDir, groupInfo.fileSource.Filename)
 			if err != nil {
-				replaceErr = err
-				return m
+				return err
 			}
 
 			rangeHref := fmt.Sprintf(
@@ -903,41 +951,48 @@ func processMarkdownFile(config Config, mdFileSource FileSource, fileInventory *
 			}
 		}
 
-		var b bytes.Buffer
-		_, err = b.Write(startTag)
+		_, err = resultBuf.Write(startTag)
 		if err != nil {
-			panic(err)
+			return err
 		}
-		err = b.WriteByte('\n')
+		err = resultBuf.WriteByte('\n')
 		if err != nil {
-			panic(err)
-		}
-		err = tpl.Execute(&b, templateData)
-		if err != nil {
-			replaceErr = err
-			return m
-		}
-		_, err = b.Write(endTag)
-		if err != nil {
-			panic(err)
+			return err
 		}
 
-		changed = true
+		var templateOutputBuf bytes.Buffer
+		err = tpl.Execute(&templateOutputBuf, templateData)
+		if err != nil {
+			return err
+		}
 
-		return b.Bytes()
-	})
+		if !bytes.Equal(templateOutputBuf.Bytes(), existingContent) {
+			mdContext.Changed = true
 
-	if replaceErr != nil {
-		return replaceErr
+			if mdContext.CheckOny {
+				mdContext.CheckErrors = append(mdContext.CheckErrors, fmt.Sprintf(`incorrect group "%s" template content in "%s"`, token, mdContext.Filename))
+			} else {
+				fmt.Printf(`updating group "%s" template content in "%s"`+"\n", token, mdContext.Filename)
+			}
+		}
+
+		_, err = resultBuf.Write(templateOutputBuf.Bytes())
+		if err != nil {
+			return err
+		}
+
+		_, err = resultBuf.Write(endTag)
+		if err != nil {
+			return err
+		}
 	}
 
-	if changed {
-		err := os.WriteFile(mdFileSource.Filename, fileBytes, 0)
-		if err != nil {
-			return fmt.Errorf(`failed to write "%s": %w`, mdFileSource.Filename, err)
-		}
+	_, err := resultBuf.Write(mdContext.FileBytes[remainingIndex:])
+	if err != nil {
+		return err
 	}
 
+	mdContext.FileBytes = resultBuf.Bytes()
 	return nil
 }
 
