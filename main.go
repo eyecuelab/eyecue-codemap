@@ -47,12 +47,21 @@ type FileInventory struct {
 	sync.Mutex
 }
 
-var tokenNeededRegexp = regexp.MustCompile(`\[eyecue-codemap(-group)?]`)
-var tokenRegexp = regexp.MustCompile(`^(.*)\[eyecue-codemap:([A-Za-z0-9]+)](.*)$`)
-var tokenGroupStartRegexp = regexp.MustCompile(`\[eyecue-codemap-group:([A-Za-z0-9]+)]`)
-var tokenGroupEndRegexp = regexp.MustCompile(`\[end-eyecue-codemap-group:([A-Za-z0-9]+)(:([a-f0-9]{40}))?]`)
-var tokenRefRegexp = regexp.MustCompile(`<!--eyecue-codemap:[A-Za-z0-9]+-->]\(.*?\)`)
-var tokenGroupRefRegexp = regexp.MustCompile(`(?s)(<!--eyecue-codemap-group:([A-Za-z0-9]+):(.+?)-->)\n(.*?)(<!--end-eyecue-codemap-group-->)`)
+func tagBaseName() string {
+	s := os.Getenv("CODEMAP_TAG_BASE")
+	if s != "" {
+		return s
+	}
+
+	return "eyecue-codemap"
+}
+
+var tokenNeededRegexp = regexp.MustCompile(fmt.Sprintf(`\[%s(-group)?]`, tagBaseName()))
+var tokenRegexp = regexp.MustCompile(fmt.Sprintf(`^(.*)\[%s:([A-Za-z0-9]+)](.*)$`, tagBaseName()))
+var tokenGroupStartRegexp = regexp.MustCompile(fmt.Sprintf(`\[%s-group:([A-Za-z0-9]+)]`, tagBaseName()))
+var tokenGroupEndRegexp = regexp.MustCompile(fmt.Sprintf(`\[end-%s-group:([A-Za-z0-9]+)(:([a-f0-9]{40}))?]`, tagBaseName()))
+var tokenRefRegexp = regexp.MustCompile(fmt.Sprintf(`<!--%s:[A-Za-z0-9]+-->]\(.*?\)`, tagBaseName()))
+var tokenGroupRefRegexp = regexp.MustCompile(fmt.Sprintf(`(?s)(<!--%s-group:([A-Za-z0-9]+):(.+?)-->)\n(.*?)(<!--end-%s-group-->)`, tagBaseName(), tagBaseName()))
 
 var ignoreExtensions = []string{
 	".csv",
@@ -357,7 +366,7 @@ func ackTokenGroupsForFile(config Config, groupInfos []TokenGroupInfo) (err erro
 				lineBytes = tokenGroupEndRegexp.ReplaceAll(
 					lineBytes,
 					[]byte(fmt.Sprintf(
-						"[end-eyecue-codemap-group:%s:%s]",
+						"[end-%s-group:%s:%s]", tagBaseName(),
 						groupInfo.token,
 						groupInfo.actualHash,
 					)))
@@ -597,7 +606,7 @@ func processTokenGroups(fileSource FileSource, fileBytes []byte, fileInventory *
 			expectedHash := groupMatch[3]
 
 			if currentGroup == nil {
-				return fmt.Errorf(`end-eyecue-codemap-group for unknown group "%s" (%s:%d)`, token, fileSource.Filename, currentLine)
+				return fmt.Errorf(`end-%s-group for unknown group "%s" (%s:%d)`, tagBaseName(), token, fileSource.Filename, currentLine)
 			}
 
 			fileInventory.Lock()
@@ -625,7 +634,7 @@ func processTokenGroups(fileSource FileSource, fileBytes []byte, fileInventory *
 		if len(groupMatch) > 0 {
 			token := groupMatch[1]
 			if currentGroup != nil {
-				return fmt.Errorf(`overlapping eyecue-codemap-group "%s" not allowed (%s:%d)`, token, fileSource.Filename, currentLine)
+				return fmt.Errorf(`overlapping %s-group "%s" not allowed (%s:%d)`, tagBaseName(), token, fileSource.Filename, currentLine)
 			}
 
 			currentGroup = &CurrentGroup{
@@ -639,7 +648,7 @@ func processTokenGroups(fileSource FileSource, fileBytes []byte, fileInventory *
 	}
 
 	if currentGroup != nil {
-		return fmt.Errorf("unclosed eyecue-codemap-group in %s", fileSource.Filename)
+		return fmt.Errorf("unclosed %s-group in %s", tagBaseName(), fileSource.Filename)
 	}
 
 	return nil
@@ -857,7 +866,7 @@ func updateTokenRefs(mdContext *markdownContext) error {
 						mdTarget = fmt.Sprintf("%s#L%d", locRelPath, loc.lineNum)
 						outputTarget = fmt.Sprintf("%s:%d", locRelPath, loc.lineNum)
 					}
-					replacement := fmt.Sprintf("<!--eyecue-codemap:%s-->](%s)", token, mdTarget)
+					replacement := fmt.Sprintf("<!--%s:%s-->](%s)", tagBaseName(), token, mdTarget)
 					if original != replacement {
 						if mdContext.CheckOny {
 							mdContext.CheckErrors = append(mdContext.CheckErrors, fmt.Sprintf(`incorrect link at "%s:%d" token "%s"`, mdContext.Filename, lineNum, token))
