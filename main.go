@@ -26,18 +26,18 @@ import (
 )
 
 type TokenLocation struct {
-	filename   string
-	lineNum    int
-	linkToFile bool
+	Filename   string
+	LineNum    int
+	LinkToFile bool
 }
 
 type TokenGroupInfo struct {
-	token           string
-	fileSource      FileSource
-	startLineNumber int
-	endLineNumber   int
-	actualHash      string
-	expectedHash    string
+	Token           string
+	FileSource      FileSource
+	StartLineNumber int
+	EndLineNumber   int
+	ActualHash      string
+	ExpectedHash    string
 }
 
 type FileInventory struct {
@@ -47,21 +47,21 @@ type FileInventory struct {
 	sync.Mutex
 }
 
-func tagBaseName() string {
+var tagBaseName = func() string {
 	s := os.Getenv("CODEMAP_TAG_BASE")
 	if s != "" {
 		return s
 	}
 
 	return "eyecue-codemap"
-}
+}()
 
-var tokenNeededRegexp = regexp.MustCompile(fmt.Sprintf(`\[%s(-group)?]`, tagBaseName()))
-var tokenRegexp = regexp.MustCompile(fmt.Sprintf(`^(.*)\[%s:([A-Za-z0-9]+)](.*)$`, tagBaseName()))
-var tokenGroupStartRegexp = regexp.MustCompile(fmt.Sprintf(`\[%s-group:([A-Za-z0-9]+)]`, tagBaseName()))
-var tokenGroupEndRegexp = regexp.MustCompile(fmt.Sprintf(`\[end-%s-group:([A-Za-z0-9]+)(:([a-f0-9]{40}))?]`, tagBaseName()))
-var tokenRefRegexp = regexp.MustCompile(fmt.Sprintf(`<!--%s:[A-Za-z0-9]+-->]\(.*?\)`, tagBaseName()))
-var tokenGroupRefRegexp = regexp.MustCompile(fmt.Sprintf(`(?s)(<!--%s-group:([A-Za-z0-9]+):(.+?)-->)\n(.*?)(<!--end-%s-group-->)`, tagBaseName(), tagBaseName()))
+var tokenNeededRegexp = regexp.MustCompile(fmt.Sprintf(`\[%s(-group)?]`, tagBaseName))
+var tokenRegexp = regexp.MustCompile(fmt.Sprintf(`^(.*)\[%s:([A-Za-z0-9]+)](.*)$`, tagBaseName))
+var tokenGroupStartRegexp = regexp.MustCompile(fmt.Sprintf(`\[%s-group:([A-Za-z0-9]+)]`, tagBaseName))
+var tokenGroupEndRegexp = regexp.MustCompile(fmt.Sprintf(`\[end-%s-group:([A-Za-z0-9]+)(:([a-f0-9]{40}))?]`, tagBaseName))
+var tokenRefRegexp = regexp.MustCompile(fmt.Sprintf(`<!--%s:[A-Za-z0-9]+-->]\(.*?\)`, tagBaseName))
+var tokenGroupRefRegexp = regexp.MustCompile(fmt.Sprintf(`(?s)(<!--%s-group:([A-Za-z0-9]+):(.+?)-->)\n(.*?)(<!--end-%s-group-->)`, tagBaseName, tagBaseName))
 
 var ignoreExtensions = []string{
 	".csv",
@@ -98,6 +98,8 @@ type FileSource struct {
 	Filename     string
 	FromGitIndex bool
 }
+
+var ErrMarkdownInvalid = errors.New("invalid token usage in Markdown")
 
 func main() {
 	var config Config
@@ -143,7 +145,9 @@ func main() {
 
 	err := run(config)
 	if err != nil {
-		fmt.Printf("ERROR: %v\n", err)
+		if !errors.Is(err, ErrMarkdownInvalid) {
+			fmt.Printf("ERROR: %v\n", err)
+		}
 		fmt.Println("eyecue-codemap completed with errors")
 		os.Exit(1)
 	}
@@ -211,7 +215,7 @@ func run(config Config) error {
 		if len(tokenLocs) > 1 {
 			errMsg := fmt.Sprintf("duplicate token \"%s\" at:", token)
 			for _, tokenLoc := range tokenLocs {
-				errMsg = fmt.Sprintf("%s\n   %s:%d", errMsg, tokenLoc.filename, tokenLoc.lineNum)
+				errMsg = fmt.Sprintf("%s\n   %s:%d", errMsg, tokenLoc.Filename, tokenLoc.LineNum)
 			}
 			dupTokensErrs = append(dupTokensErrs, errMsg)
 		}
@@ -224,10 +228,16 @@ func run(config Config) error {
 	}
 
 	// check or update the Markdown files
+	hadCheckErrors := false
 	for _, fileSource := range fileInventory.MarkdownFileSources {
-		err := processMarkdownFile(config, fileSource, fileInventory, unusedTokens)
+		checkErrors, err := processMarkdownFile(config, fileSource, fileInventory, unusedTokens)
 		if err != nil {
 			return err
+		}
+
+		if len(checkErrors) > 0 {
+			hadCheckErrors = true
+			fmt.Println(strings.Join(checkErrors, "\n"))
 		}
 	}
 
@@ -235,25 +245,32 @@ func run(config Config) error {
 	var unusedTokenErrs []string
 	for token := range unusedTokens {
 		tokenLoc := fileInventory.SinglesByToken[token][0]
-		msg := fmt.Sprintf(`unused token "%s" at %s:%d`, token, tokenLoc.filename, tokenLoc.lineNum)
+		msg := fmt.Sprintf(`unused token "%s" at %s:%d`, token, tokenLoc.Filename, tokenLoc.LineNum)
 		unusedTokenErrs = append(unusedTokenErrs, msg)
 	}
 
 	if len(unusedTokenErrs) > 0 {
-		msg := strings.Join(unusedTokenErrs, "\n")
-		if config.NoUnused {
-			return errors.New(msg)
-		} else {
-			fmt.Println(msg)
-		}
+		fmt.Println(strings.Join(unusedTokenErrs, "\n"))
 	}
 
 	// Process groups
 	if config.AckGroups {
-		return ackTokenGroups(config, fileInventory)
+		err := ackTokenGroups(config, fileInventory)
+		if err != nil {
+			return err
+		}
 	} else {
-		return checkTokenGroups(fileInventory)
+		err := checkTokenGroups(fileInventory)
+		if err != nil {
+			return err
+		}
 	}
+
+	if config.NoUnused && len(unusedTokenErrs) > 0 || hadCheckErrors {
+		return ErrMarkdownInvalid
+	}
+
+	return nil
 }
 
 func inventoryFiles(config Config, fileSources []FileSource) (*FileInventory, error) {
@@ -281,7 +298,7 @@ LOOP:
 			}
 
 			wg.Go(func() error {
-				err := processFile(config, fileSource, fileInventory)
+				err := inventoryFileAndGenerateTokens(config, fileSource, fileInventory)
 				if err != nil {
 					return err
 				}
@@ -304,15 +321,203 @@ LOOP:
 
 	for _, groupInfos := range fileInventory.GroupsByToken {
 		sort.Slice(groupInfos, func(i, j int) bool {
-			if groupInfos[i].fileSource.Filename == groupInfos[j].fileSource.Filename {
-				return groupInfos[i].startLineNumber < groupInfos[j].startLineNumber
+			if groupInfos[i].FileSource.Filename == groupInfos[j].FileSource.Filename {
+				return groupInfos[i].StartLineNumber < groupInfos[j].StartLineNumber
 			}
 
-			return groupInfos[i].fileSource.Filename < groupInfos[j].fileSource.Filename
+			return groupInfos[i].FileSource.Filename < groupInfos[j].FileSource.Filename
 		})
 	}
 
 	return fileInventory, nil
+}
+
+func inventoryFileAndGenerateTokens(config Config, fileSource FileSource, fileInventory *FileInventory) error {
+	for _, ext := range ignoreExtensions {
+		if strings.HasSuffix(fileSource.Filename, ext) {
+			return nil
+		}
+	}
+
+	fileBytes, err := readFile(config, fileSource)
+	if err != nil {
+		return fmt.Errorf(`failed to read "%s": %w`, fileSource.Filename, err)
+	}
+
+	// generate tokens
+	if !config.CheckOnly {
+		changed := false
+		fileBytes = tokenNeededRegexp.ReplaceAllFunc(fileBytes, func(matched []byte) []byte {
+			changed = true
+			token := generateToken()
+			fmt.Printf("Added new token \"%s\" to \"%s\"\n", token, fileSource.Filename)
+			return []byte("[" + string(matched[1:len(matched)-1]) + ":" + token + "]")
+		})
+
+		if changed {
+			err := os.WriteFile(fileSource.Filename, fileBytes, 0)
+			if err != nil {
+				return fmt.Errorf(`failed to write "%s": %w`, fileSource.Filename, err)
+			}
+		}
+	}
+
+	err = inventoryTokenGroups(fileSource, fileBytes, fileInventory)
+	if err != nil {
+		return err
+	}
+
+	// We'll link to the entire file (instead of a specific line) for any [eyecue-codemap] that:
+	// * Is preceded only by the shebang and/or blank lines
+	// * Is followed by a blank line or EOF
+	linkToFile := true
+
+	// inventory tokens
+	currentLine := 1
+	var line string
+	var peekLine bool
+	scn := bufio.NewScanner(bytes.NewReader(fileBytes))
+	for {
+		if peekLine {
+			peekLine = false
+		} else {
+			if !scn.Scan() {
+				break
+			}
+			line = scn.Text()
+		}
+
+		doneScanning := false
+
+		m := tokenRegexp.FindAllStringSubmatch(line, -1)
+
+		// If we found a token, and we still think we want to link to the file,
+		// check the next line to make sure it's blank or EOF.
+		if linkToFile && len(m) > 0 {
+			if scn.Scan() {
+				peekLine = true
+				line = scn.Text()
+				if strings.TrimSpace(line) != "" {
+					linkToFile = false
+				}
+			} else {
+				// no more lines, we'll link to the file
+				doneScanning = true
+			}
+		}
+
+		for _, match := range m {
+			before := strings.TrimSpace(match[1])
+			token := match[2]
+			after := strings.TrimSpace(match[3])
+
+			// If the only thing on the line is the codemap comment,
+			// link to the next line. Add more comment strings here as needed.
+			lineNum := currentLine
+			if after == "" && (before == "//" || before == "#") {
+				lineNum++
+			} else if before == "<!--" && after == "-->" {
+				lineNum++
+			}
+
+			fileInventory.Lock()
+			fileInventory.SinglesByToken[token] = append(fileInventory.SinglesByToken[token], TokenLocation{
+				Filename:   fileSource.Filename,
+				LineNum:    lineNum,
+				LinkToFile: linkToFile,
+			})
+			fileInventory.Unlock()
+		}
+
+		if doneScanning {
+			break
+		}
+
+		if linkToFile && !(strings.HasPrefix(line, "#!") || strings.TrimSpace(line) == "") {
+			linkToFile = false
+		}
+
+		currentLine++
+	}
+	if scn.Err() != nil {
+		if errors.Is(scn.Err(), bufio.ErrTooLong) {
+			// probably not a text file. This is OK.
+			return nil
+		}
+
+		return fmt.Errorf(`failed to scan "%s": %w`, fileSource.Filename, scn.Err())
+	}
+
+	return nil
+}
+
+func inventoryTokenGroups(fileSource FileSource, fileBytes []byte, fileInventory *FileInventory) error {
+	type CurrentGroup struct {
+		Hasher          hash.Hash
+		Token           string
+		StartLineNumber int
+	}
+	var currentGroup *CurrentGroup
+
+	currentLine := 1
+
+	scn := bufio.NewScanner(bytes.NewReader(fileBytes))
+	scn.Split(scanLinesWithNewlines)
+	for scn.Scan() {
+		line := scn.Text()
+
+		groupMatch := tokenGroupEndRegexp.FindStringSubmatch(line)
+		if len(groupMatch) > 0 {
+			token := groupMatch[1]
+			expectedHash := groupMatch[3]
+
+			if currentGroup == nil {
+				return fmt.Errorf(`end-%s-group for unknown group "%s" (%s:%d)`, tagBaseName, token, fileSource.Filename, currentLine)
+			}
+
+			fileInventory.Lock()
+			fileInventory.GroupsByToken[token] = append(fileInventory.GroupsByToken[token], TokenGroupInfo{
+				Token:           token,
+				FileSource:      fileSource,
+				StartLineNumber: currentGroup.StartLineNumber,
+				EndLineNumber:   currentLine,
+				ActualHash:      fmt.Sprintf("%x", currentGroup.Hasher.Sum(nil)),
+				ExpectedHash:    expectedHash,
+			})
+			fileInventory.Unlock()
+
+			currentGroup = nil
+		}
+
+		if currentGroup != nil {
+			_, err := currentGroup.Hasher.Write(scn.Bytes())
+			if err != nil {
+				return err
+			}
+		}
+
+		groupMatch = tokenGroupStartRegexp.FindStringSubmatch(line)
+		if len(groupMatch) > 0 {
+			token := groupMatch[1]
+			if currentGroup != nil {
+				return fmt.Errorf(`overlapping %s-group "%s" not allowed (%s:%d)`, tagBaseName, token, fileSource.Filename, currentLine)
+			}
+
+			currentGroup = &CurrentGroup{
+				Hasher:          sha1.New(),
+				Token:           token,
+				StartLineNumber: currentLine,
+			}
+		}
+
+		currentLine++
+	}
+
+	if currentGroup != nil {
+		return fmt.Errorf("unclosed %s-group in %s", tagBaseName, fileSource.Filename)
+	}
+
+	return nil
 }
 
 func ackTokenGroups(config Config, fileInventory *FileInventory) error {
@@ -320,8 +525,8 @@ func ackTokenGroups(config Config, fileInventory *FileInventory) error {
 
 	for _, groupInfos := range fileInventory.GroupsByToken {
 		for _, groupInfo := range groupInfos {
-			if groupInfo.actualHash != groupInfo.expectedHash {
-				groupInfosByFile[groupInfo.fileSource.Filename] = append(groupInfosByFile[groupInfo.fileSource.Filename], groupInfo)
+			if groupInfo.ActualHash != groupInfo.ExpectedHash {
+				groupInfosByFile[groupInfo.FileSource.Filename] = append(groupInfosByFile[groupInfo.FileSource.Filename], groupInfo)
 			}
 		}
 	}
@@ -337,7 +542,7 @@ func ackTokenGroups(config Config, fileInventory *FileInventory) error {
 }
 
 func ackTokenGroupsForFile(config Config, groupInfos []TokenGroupInfo) (err error) {
-	fileSource := groupInfos[0].fileSource
+	fileSource := groupInfos[0].FileSource
 
 	fileBytes, err := readFile(config, fileSource)
 	if err != nil {
@@ -362,13 +567,13 @@ func ackTokenGroupsForFile(config Config, groupInfos []TokenGroupInfo) (err erro
 		currentLine++
 		lineBytes := scn.Bytes()
 		for _, groupInfo := range groupInfos {
-			if groupInfo.endLineNumber == currentLine {
+			if groupInfo.EndLineNumber == currentLine {
 				lineBytes = tokenGroupEndRegexp.ReplaceAll(
 					lineBytes,
 					[]byte(fmt.Sprintf(
-						"[end-%s-group:%s:%s]", tagBaseName(),
-						groupInfo.token,
-						groupInfo.actualHash,
+						"[end-%s-group:%s:%s]", tagBaseName,
+						groupInfo.Token,
+						groupInfo.ActualHash,
 					)))
 			}
 		}
@@ -389,7 +594,7 @@ func checkTokenGroups(fileInventory *FileInventory) error {
 		showGroup := false
 
 		for _, groupInfo := range groupInfos {
-			if groupInfo.actualHash != groupInfo.expectedHash {
+			if groupInfo.ActualHash != groupInfo.ExpectedHash {
 				showGroup = true
 				break
 			}
@@ -398,21 +603,21 @@ func checkTokenGroups(fileInventory *FileInventory) error {
 		if showGroup {
 			showAckMessage = true
 			sort.Slice(groupInfos, func(i, j int) bool {
-				return groupInfos[i].fileSource.Filename < groupInfos[j].fileSource.Filename
+				return groupInfos[i].FileSource.Filename < groupInfos[j].FileSource.Filename
 			})
 			fmt.Printf("group \"%s\" has changes (indicated with *):\n", groupName)
 			for _, groupInfo := range groupInfos {
 				indicator := " "
-				if groupInfo.actualHash != groupInfo.expectedHash {
+				if groupInfo.ActualHash != groupInfo.ExpectedHash {
 					indicator = "*"
 				}
 
 				fmt.Printf("  %s  %s:%d (lines %d-%d)\n",
 					indicator,
-					groupInfo.fileSource.Filename,
-					groupInfo.startLineNumber,
-					groupInfo.startLineNumber+1,
-					groupInfo.endLineNumber-1,
+					groupInfo.FileSource.Filename,
+					groupInfo.StartLineNumber,
+					groupInfo.StartLineNumber+1,
+					groupInfo.EndLineNumber-1,
 				)
 			}
 		}
@@ -561,16 +766,6 @@ func readFilenamesFromGitIndex() ([]FileSource, error) {
 	return fileSources, nil
 }
 
-func readFileFromGitIndex(filename string) ([]byte, error) {
-	cmd := exec.Command("git", "show", ":"+filename)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("git show :%s failed: %w", filename, err)
-	}
-
-	return output, err
-}
-
 func readFile(config Config, fileSource FileSource) ([]byte, error) {
 	if fileSource.FromGitIndex {
 		if config.Verbose {
@@ -585,212 +780,34 @@ func readFile(config Config, fileSource FileSource) ([]byte, error) {
 	return os.ReadFile(fileSource.Filename)
 }
 
-func processTokenGroups(fileSource FileSource, fileBytes []byte, fileInventory *FileInventory) error {
-	type CurrentGroup struct {
-		Hasher          hash.Hash
-		Token           string
-		StartLineNumber int
-	}
-	var currentGroup *CurrentGroup
-
-	currentLine := 1
-
-	scn := bufio.NewScanner(bytes.NewReader(fileBytes))
-	scn.Split(scanLinesWithNewlines)
-	for scn.Scan() {
-		line := scn.Text()
-
-		groupMatch := tokenGroupEndRegexp.FindStringSubmatch(line)
-		if len(groupMatch) > 0 {
-			token := groupMatch[1]
-			expectedHash := groupMatch[3]
-
-			if currentGroup == nil {
-				return fmt.Errorf(`end-%s-group for unknown group "%s" (%s:%d)`, tagBaseName(), token, fileSource.Filename, currentLine)
-			}
-
-			fileInventory.Lock()
-			fileInventory.GroupsByToken[token] = append(fileInventory.GroupsByToken[token], TokenGroupInfo{
-				token:           token,
-				fileSource:      fileSource,
-				startLineNumber: currentGroup.StartLineNumber,
-				endLineNumber:   currentLine,
-				actualHash:      fmt.Sprintf("%x", currentGroup.Hasher.Sum(nil)),
-				expectedHash:    expectedHash,
-			})
-			fileInventory.Unlock()
-
-			currentGroup = nil
-		}
-
-		if currentGroup != nil {
-			_, err := currentGroup.Hasher.Write(scn.Bytes())
-			if err != nil {
-				return err
-			}
-		}
-
-		groupMatch = tokenGroupStartRegexp.FindStringSubmatch(line)
-		if len(groupMatch) > 0 {
-			token := groupMatch[1]
-			if currentGroup != nil {
-				return fmt.Errorf(`overlapping %s-group "%s" not allowed (%s:%d)`, tagBaseName(), token, fileSource.Filename, currentLine)
-			}
-
-			currentGroup = &CurrentGroup{
-				Hasher:          sha1.New(),
-				Token:           token,
-				StartLineNumber: currentLine,
-			}
-		}
-
-		currentLine++
+func readFileFromGitIndex(filename string) ([]byte, error) {
+	cmd := exec.Command("git", "show", ":"+filename)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("git show :%s failed: %w", filename, err)
 	}
 
-	if currentGroup != nil {
-		return fmt.Errorf("unclosed %s-group in %s", tagBaseName(), fileSource.Filename)
-	}
-
-	return nil
+	return output, err
 }
 
-func processFile(config Config, fileSource FileSource, fileInventory *FileInventory) error {
-	for _, ext := range ignoreExtensions {
-		if strings.HasSuffix(fileSource.Filename, ext) {
-			return nil
-		}
-	}
-
-	fileBytes, err := readFile(config, fileSource)
-	if err != nil {
-		return fmt.Errorf(`failed to read "%s": %w`, fileSource.Filename, err)
-	}
-
-	// generate tokens
-	if !config.CheckOnly {
-		changed := false
-		fileBytes = tokenNeededRegexp.ReplaceAllFunc(fileBytes, func(matched []byte) []byte {
-			changed = true
-			token := generateToken()
-			fmt.Printf("Added new token \"%s\" to \"%s\"\n", token, fileSource.Filename)
-			return []byte("[" + string(matched[1:len(matched)-1]) + ":" + token + "]")
-		})
-
-		if changed {
-			err := os.WriteFile(fileSource.Filename, fileBytes, 0)
-			if err != nil {
-				return fmt.Errorf(`failed to write "%s": %w`, fileSource.Filename, err)
-			}
-		}
-	}
-
-	err = processTokenGroups(fileSource, fileBytes, fileInventory)
-	if err != nil {
-		return err
-	}
-
-	// We'll link to the entire file (instead of a specific line) for any [eyecue-codemap] that:
-	// * Is preceded only by the shebang and/or blank lines
-	// * Is followed by a blank line or EOF
-	linkToFile := true
-
-	// inventory tokens
-	currentLine := 1
-	var line string
-	var peekLine bool
-	scn := bufio.NewScanner(bytes.NewReader(fileBytes))
-	for {
-		if peekLine {
-			peekLine = false
-		} else {
-			if !scn.Scan() {
-				break
-			}
-			line = scn.Text()
-		}
-
-		doneScanning := false
-
-		m := tokenRegexp.FindAllStringSubmatch(line, -1)
-
-		// If we found a token, and we still think we want to link to the file,
-		// check the next line to make sure it's blank or EOF.
-		if linkToFile && len(m) > 0 {
-			if scn.Scan() {
-				peekLine = true
-				line = scn.Text()
-				if strings.TrimSpace(line) != "" {
-					linkToFile = false
-				}
-			} else {
-				// no more lines, we'll link to the file
-				doneScanning = true
-			}
-		}
-
-		for _, match := range m {
-			before := strings.TrimSpace(match[1])
-			token := match[2]
-			after := strings.TrimSpace(match[3])
-
-			// If the only thing on the line is the codemap comment,
-			// link to the next line. Add more comment strings here as needed.
-			lineNum := currentLine
-			if after == "" && (before == "//" || before == "#") {
-				lineNum++
-			} else if before == "<!--" && after == "-->" {
-				lineNum++
-			}
-
-			fileInventory.Lock()
-			fileInventory.SinglesByToken[token] = append(fileInventory.SinglesByToken[token], TokenLocation{
-				filename:   fileSource.Filename,
-				lineNum:    lineNum,
-				linkToFile: linkToFile,
-			})
-			fileInventory.Unlock()
-		}
-
-		if doneScanning {
-			break
-		}
-
-		if linkToFile && !(strings.HasPrefix(line, "#!") || strings.TrimSpace(line) == "") {
-			linkToFile = false
-		}
-
-		currentLine++
-	}
-	if scn.Err() != nil {
-		if scn.Err() == bufio.ErrTooLong {
-			// probably not a text file. This is OK.
-			return nil
-		}
-
-		return fmt.Errorf(`failed to scan "%s": %w`, fileSource.Filename, scn.Err())
-	}
-
-	return nil
-}
-
-type markdownContext struct {
+type MarkdownContext struct {
 	Changed       bool
-	CheckErrors   []string
 	CheckOny      bool
 	FileBytes     []byte
 	FileInventory *FileInventory
 	Filename      string
 	FilenameDir   string
+	Problems      []string
 	UnusedTokens  map[string]struct{}
 }
 
-func processMarkdownFile(config Config, mdFileSource FileSource, fileInventory *FileInventory, unusedTokens map[string]struct{}) error {
+func processMarkdownFile(config Config, mdFileSource FileSource, fileInventory *FileInventory, unusedTokens map[string]struct{}) ([]string, error) {
 	fileBytes, err := readFile(config, mdFileSource)
 	if err != nil {
-		return fmt.Errorf(`failed to read "%s": %w`, mdFileSource.Filename, err)
+		return nil, fmt.Errorf(`failed to read "%s": %w`, mdFileSource.Filename, err)
 	}
 
-	mdContext := &markdownContext{
+	mdContext := &MarkdownContext{
 		CheckOny:      config.CheckOnly,
 		FileBytes:     fileBytes,
 		FileInventory: fileInventory,
@@ -799,31 +816,27 @@ func processMarkdownFile(config Config, mdFileSource FileSource, fileInventory *
 		UnusedTokens:  unusedTokens,
 	}
 
-	err = updateTokenRefs(mdContext)
+	err = processTokenRefs(mdContext)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	err = renderMarkdownGroupTemplates(mdContext)
+	err = processGroupTemplates(mdContext)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	if config.CheckOnly {
-		if len(mdContext.CheckErrors) > 0 {
-			fmt.Println(strings.Join(mdContext.CheckErrors, "\n"))
-		}
-	} else if mdContext.Changed {
+	if !config.CheckOnly && mdContext.Changed {
 		err := os.WriteFile(mdFileSource.Filename, mdContext.FileBytes, 0)
 		if err != nil {
-			return fmt.Errorf(`failed to write "%s": %w`, mdFileSource.Filename, err)
+			return nil, fmt.Errorf(`failed to write "%s": %w`, mdFileSource.Filename, err)
 		}
 	}
 
-	return nil
+	return mdContext.Problems, nil
 }
 
-func updateTokenRefs(mdContext *markdownContext) error {
+func processTokenRefs(mdContext *MarkdownContext) error {
 	var resultBuf bytes.Buffer
 
 	fileBytes := mdContext.FileBytes
@@ -847,29 +860,29 @@ func updateTokenRefs(mdContext *markdownContext) error {
 
 			tokenLocs := mdContext.FileInventory.SinglesByToken[token]
 			if len(tokenLocs) == 0 {
-				mdContext.CheckErrors = append(mdContext.CheckErrors, fmt.Sprintf(`token "%s" at "%s:%d" was not found`, token, mdContext.Filename, lineNum))
+				mdContext.Problems = append(mdContext.Problems, fmt.Sprintf(`token "%s" at "%s:%d" was not found`, token, mdContext.Filename, lineNum))
 			} else {
 				delete(mdContext.UnusedTokens, token)
 
 				loc := tokenLocs[0]
-				locRelPath, err := filepath.Rel(mdContext.FilenameDir, loc.filename)
+				locRelPath, err := filepath.Rel(mdContext.FilenameDir, loc.Filename)
 				if err != nil {
 					panic(err)
 				} else {
 					original := string(m)
 					var mdTarget string
 					var outputTarget string
-					if loc.linkToFile {
+					if loc.LinkToFile {
 						mdTarget = locRelPath
 						outputTarget = locRelPath
 					} else {
-						mdTarget = fmt.Sprintf("%s#L%d", locRelPath, loc.lineNum)
-						outputTarget = fmt.Sprintf("%s:%d", locRelPath, loc.lineNum)
+						mdTarget = fmt.Sprintf("%s#L%d", locRelPath, loc.LineNum)
+						outputTarget = fmt.Sprintf("%s:%d", locRelPath, loc.LineNum)
 					}
-					replacement := fmt.Sprintf("<!--%s:%s-->](%s)", tagBaseName(), token, mdTarget)
+					replacement := fmt.Sprintf("<!--%s:%s-->](%s)", tagBaseName, token, mdTarget)
 					if original != replacement {
 						if mdContext.CheckOny {
-							mdContext.CheckErrors = append(mdContext.CheckErrors, fmt.Sprintf(`incorrect link at "%s:%d" token "%s"`, mdContext.Filename, lineNum, token))
+							mdContext.Problems = append(mdContext.Problems, fmt.Sprintf(`incorrect link at "%s:%d" token "%s"`, mdContext.Filename, lineNum, token))
 						} else {
 							mdContext.Changed = true
 							fmt.Printf("updated link at \"%s:%d\" token \"%s\" -> \"%s\"\n", mdContext.Filename, lineNum, token, outputTarget)
@@ -893,7 +906,7 @@ func updateTokenRefs(mdContext *markdownContext) error {
 	return nil
 }
 
-func renderMarkdownGroupTemplates(mdContext *markdownContext) error {
+func processGroupTemplates(mdContext *MarkdownContext) error {
 	var resultBuf bytes.Buffer
 
 	remainingIndex := 0
@@ -906,6 +919,7 @@ func renderMarkdownGroupTemplates(mdContext *markdownContext) error {
 		}
 
 		remainingIndex = match[1]
+		lineNum := bytes.Count(mdContext.FileBytes[:match[0]], []byte("\n")) + 1
 		startTag := mdContext.FileBytes[match[2]:match[3]]
 		token := string(mdContext.FileBytes[match[4]:match[5]])
 		templateText := string(mdContext.FileBytes[match[6]:match[7]])
@@ -915,8 +929,11 @@ func renderMarkdownGroupTemplates(mdContext *markdownContext) error {
 		groupInfos := mdContext.FileInventory.GroupsByToken[token]
 
 		if len(groupInfos) == 0 {
-			// TODO: get the line number into this error message
-			mdContext.CheckErrors = append(mdContext.CheckErrors, fmt.Sprintf(`group token "%s" in "%s" was not found`, token, mdContext.Filename))
+			mdContext.Problems = append(mdContext.Problems, fmt.Sprintf(`group token "%s" at "%s:%d" was not found`, token, mdContext.Filename, lineNum))
+			_, err := resultBuf.Write(mdContext.FileBytes[match[0]:match[1]])
+			if err != nil {
+				return err
+			}
 			continue
 		}
 
@@ -935,9 +952,9 @@ func renderMarkdownGroupTemplates(mdContext *markdownContext) error {
 
 		templateData := make([]GroupTemplateData, len(groupInfos))
 		for i, groupInfo := range groupInfos {
-			fileLine := fmt.Sprintf("%s:%d", groupInfo.fileSource.Filename, groupInfo.startLineNumber)
+			fileLine := fmt.Sprintf("%s:%d", groupInfo.FileSource.Filename, groupInfo.StartLineNumber)
 
-			locRelPath, err := filepath.Rel(mdContext.FilenameDir, groupInfo.fileSource.Filename)
+			locRelPath, err := filepath.Rel(mdContext.FilenameDir, groupInfo.FileSource.Filename)
 			if err != nil {
 				return err
 			}
@@ -945,15 +962,15 @@ func renderMarkdownGroupTemplates(mdContext *markdownContext) error {
 			rangeHref := fmt.Sprintf(
 				"%s#L%d-L%d",
 				locRelPath,
-				groupInfo.startLineNumber+1,
-				groupInfo.endLineNumber-1,
+				groupInfo.StartLineNumber+1,
+				groupInfo.EndLineNumber-1,
 			)
 
 			markdownRangeLink := fmt.Sprintf("[%s](%s)", fileLine, rangeHref)
 
 			templateData[i] = GroupTemplateData{
-				File:              groupInfo.fileSource.Filename,
-				Line:              groupInfo.startLineNumber,
+				File:              groupInfo.FileSource.Filename,
+				Line:              groupInfo.StartLineNumber,
 				FileLine:          fileLine,
 				RangeHref:         rangeHref,
 				MarkdownRangeLink: markdownRangeLink,
@@ -979,9 +996,9 @@ func renderMarkdownGroupTemplates(mdContext *markdownContext) error {
 			mdContext.Changed = true
 
 			if mdContext.CheckOny {
-				mdContext.CheckErrors = append(mdContext.CheckErrors, fmt.Sprintf(`incorrect group "%s" template content in "%s"`, token, mdContext.Filename))
+				mdContext.Problems = append(mdContext.Problems, fmt.Sprintf(`incorrect group "%s" template content at "%s:%d"`, token, mdContext.Filename, lineNum))
 			} else {
-				fmt.Printf(`updating group "%s" template content in "%s"`+"\n", token, mdContext.Filename)
+				fmt.Printf(`updating group "%s" template content at "%s:%d"`+"\n", token, mdContext.Filename, lineNum)
 			}
 		}
 
